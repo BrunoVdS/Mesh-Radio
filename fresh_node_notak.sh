@@ -19,14 +19,14 @@ DEBIAN_FRONTEND=noninteractive
 export DEBIAN_FRONTEND
 
   # Log helpers
-log()   { echo "[$(date +%F %T)] $*" >>"$LOGFILE"; }
-info()  { if [ -e /proc/$$/fd/3 ]; then echo "[$(date +%F %T)] INFO: $*" | tee -a "$LOGFILE" >&3; else echo "INFO: $*"; fi; }
-error() { if [ -e /proc/$$/fd/3 ]; then echo "[$(date +%F %T)] ERROR: $*" | tee -a "$LOGFILE" >&3; else echo "ERROR: $*" >&2; fi; }
+log()   { echo "[$(date '+%F %T')] $*" >>"$LOGFILE"; }
+info()  { if [ -e /proc/$$/fd/3 ]; then echo "[$(date '+%F %T')] INFO: $*" | tee -a "$LOGFILE" >&3; else echo "INFO: $*"; fi; }
+error() { if [ -e /proc/$$/fd/3 ]; then echo "[$(date '+%F %T')] ERROR: $*" | tee -a "$LOGFILE" >&3; else echo "ERROR: $*" >&2; fi; }
 
-#Set Batctl version if you want a spcecific version. If needed uncomment.
+# Set Batctl version if you want a specific version. If needed uncomment.
 #BATCTL_VERSION=
 
-# version if you want a spcecific version. If Bridge-Utils is not needen comment out by adding # in fornt of the line.
+# If bridge-utils is not needed comment out by adding # in front of the line.
 WANT_BRCTL=1
 
 #=== Root only =================================================================
@@ -66,28 +66,33 @@ info "Summary: OS=$(. /etc/os-release; echo $PRETTY_NAME), Kernel=$(uname -r), b
 #=== Housekeeping ==============================================================
 info "Housekeeping starting."
 
-TARGET_USER=${SUDO_USER:-$USER}
-TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
-[ -n "$TARGET_HOME" ] && [ -d "$TARGET_HOME/linux" ] && rm -rf "$TARGET_HOME/linux" || true
+TARGET_USER="${SUDO_USER:-${USER:-$(id -un 2>/dev/null || echo root)}}"
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6 || true)"
+if [ -z "${TARGET_HOME:-}" ]; then
+  TARGET_HOME="$(eval echo "~$TARGET_USER" 2>/dev/null || echo /root)"
+fi
+if [ -d "$TARGET_HOME/linux" ]; then
+  rm -rf "$TARGET_HOME/linux"
+fi
 
 info "Housekeeping is complete."
 
 
 #=== System update =============================================================
-info "Upgrade and Update of the operatingsystem starting."
+info "Upgrade and Update of the operating system starting."
 
 apt-get update -y
 apt-get -o Dpkg::Options::="--force-confdef" \
         -o Dpkg::Options::="--force-confold" \
         dist-upgrade -y
 
-info "Update and Upgrade of the operatingsystem is complete."
+info "Update and Upgrade of the operating system is complete."
 
 
 #=== Base packages==============================================================
   #=== Prerequisites - install needed packages
  
-    # Pakages list
+    # Packages list
 PACKAGES=(
   nano
   python3
@@ -146,7 +151,7 @@ OS_ID="${ID:-unknown}"
 
 # 1) Fast detection: is the module available without the need of installing it?
 if modprobe -n batman-adv 2>/dev/null; then
-  log "B.A.T.M.A.N.-Adv kernelmodule is available (dry-run ok) — skip installation proces."
+  log "B.A.T.M.A.N.-Adv kernel module is available (dry-run ok) — skip installation process."
 else
   log "B.A.T.M.A.N.-Adv module not available; attempt to create and install the B.A.T.M.A.N.-Adv module."
 
@@ -168,9 +173,9 @@ fi
 # 2) Load the B.A.T.M.A.N.-Adv module
 if ! modprobe batman-adv 2>/dev/null; then
   if [ -d "/sys/module/batman_adv" ]; then
-    log "B.A.T.M.A.N.-Adv is build in as module; modprobe not nessesary."
+    log "B.A.T.M.A.N.-Adv is built in as a module; modprobe not necessary."
   elif grep -qE '(^|/| )batman-adv(\.ko(\.(xz|gz|zst))?)?($| )' "/lib/modules/$(uname -r)/modules.dep" 2>/dev/null; then
-    info "B.A.T.M.A.N.-Adv modulebestand is present nut loading faled; continue."
+    info "B.A.T.M.A.N.-Adv module file is present but loading failed; continuing."
   else
     error "Can't load or find B.A.T.M.A.N.-Adv . Check kernel/modules/headers."
     exit 1
@@ -190,14 +195,14 @@ info "Installing Batctl."
   if apt-cache policy batctl 2>/dev/null | grep -q "Candidate:"; then
     apt-get install -y --no-install-recommends batctl
   else
-    log "Batctl nnot found in APT ; fall back to source code build."
+    log "Batctl not found in APT; falling back to source code build."
 
     install -d -m 0755 /usr/local/src
     cd /usr/local/src
 
   # 2) If you want to install a specific version: export BATCTL_VERSION=2025.0 (of wat je wilt)
     if [ -n "${BATCTL_VERSION:-}" ]; then
-      log "Build batctl verion: ${BATCTL_VERSION}"
+      log "Build batctl version: ${BATCTL_VERSION}"
       # First try the release-tarball. Fallback to git.
       if command -v curl >/dev/null 2>&1; then
         TAR="batctl-${BATCTL_VERSION}.tar.gz"
@@ -207,7 +212,7 @@ info "Installing Batctl."
           cd "batctl-${BATCTL_VERSION}"
           make && make install
         else
-          log "Release-tarball nor found, fall back to git tag."
+          log "Release tarball not found; falling back to git tag."
           if [ -d batctl ]; then
             cd batctl && git fetch --tags && git checkout "v${BATCTL_VERSION}" && git pull --ff-only
           else
@@ -217,7 +222,7 @@ info "Installing Batctl."
           make && make install
         fi
       else
-        # No curl? Continu over git tag.
+        # No curl? Continue over git tag.
         if [ -d batctl ]; then
           cd batctl && git fetch --tags && git checkout "v${BATCTL_VERSION}" && git pull --ff-only
         else
@@ -251,7 +256,7 @@ info "Installation of Batctl complete."
 
 #=== Bridge-Utils ================================================================
 if [ "$WANT_BRCTL" = "1" ]; then
-  info "Installing Bridge-Utils (legacy Brctl."
+  info "Installing Bridge-Utils (legacy brctl)."
 
   if apt-cache policy bridge-utils | grep -q "Candidate:"; then
     apt-get install -y --no-install-recommends bridge-utils \
@@ -269,6 +274,11 @@ info "Installing Reticulum (RNS)."
 # Ensure Python and pip are available (already handled in base packages, but safe check)
 if ! command -v python3 >/dev/null 2>&1; then
   error "Python3 not found. Cannot install Reticulum."
+  exit 1
+fi
+
+if ! command -v pip3 >/dev/null 2>&1; then
+  error "pip3 not found. Cannot install Reticulum."
   exit 1
 fi
 
@@ -310,23 +320,35 @@ systemctl start rnsd.service
 info "Reticulum systemd service is set up."
 
 info "==> Version check:"
-if $RNSD_PATH --version; then
-  info "rnsd version OK."
+RNSD_PATH="$(command -v rnsd || true)"
+if [ -n "$RNSD_PATH" ]; then
+  if "$RNSD_PATH" --version; then
+    info "rnsd version OK."
+  else
+    error "rnsd version check failed."
+  fi
 else
-  echo "!! rnsd --failed. Check logs."
+  error "rnsd binary not found on PATH."
 fi
 
-if need_cmd rnstatus; then
-  rnstatus --version || true
+RNSTATUS_BIN="$(command -v rnstatus || true)"
+if [ -n "$RNSTATUS_BIN" ]; then
+  "$RNSTATUS_BIN" --version || true
+else
+  info "rnstatus command not found; skipping version check."
 fi
 
-  # Check service staus
-sudo systemctl --no-pager --full status rnsd || true
+  # Check service status
+systemctl --no-pager --full status rnsd || true
 
 echo "Ready. Reticulum runs."
-echo "Configs: $HOME_DIR/.config/reticulum"
+echo "Configs: ${TARGET_HOME}/.config/reticulum"
 
-rnstatus
+if [ -n "$RNSTATUS_BIN" ]; then
+  "$RNSTATUS_BIN" || true
+else
+  info "rnstatus command not available for runtime status."
+fi
 
 info "Reticulum (RNS) is installed."
 
@@ -428,7 +450,7 @@ if [[ "$REPLY" =~ ^[Yy]$ ]]; then
   info "Initiating reboot. 👋"
   /sbin/shutdown -r now
 else
-  info "we will exit the script now."
+  info "We will exit the script now."
 fi
 
 
