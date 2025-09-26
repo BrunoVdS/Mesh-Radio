@@ -19,9 +19,35 @@ DEBIAN_FRONTEND=noninteractive
 export DEBIAN_FRONTEND
 
   # Log helpers
-log()   { echo "[$(date +%F %T)] $*" >>"$LOGFILE"; }
-info()  { if [ -e /proc/$$/fd/3 ]; then echo "[$(date +%F %T)] INFO: $*" | tee -a "$LOGFILE" >&3; else echo "INFO: $*"; fi; }
-error() { if [ -e /proc/$$/fd/3 ]; then echo "[$(date +%F %T)] ERROR: $*" | tee -a "$LOGFILE" >&3; else echo "ERROR: $*" >&2; fi; }
+timestamp() { date +%F\ %T; }
+log()   { echo "[$(timestamp)] $*" >>"$LOGFILE"; }
+info()  {
+  local message="INFO: $*"
+  if [ -e /proc/$$/fd/3 ]; then
+    echo "[$(timestamp)] ${message}" | tee -a "$LOGFILE" >&3
+  else
+    echo "[$(timestamp)] ${message}"
+  fi
+}
+warn()  {
+  local message="WARN: $*"
+  if [ -e /proc/$$/fd/3 ]; then
+    echo "[$(timestamp)] ${message}" | tee -a "$LOGFILE" >&3
+  else
+    echo "[$(timestamp)] ${message}"
+  fi
+}
+error() {
+  local message="ERROR: $*"
+  if [ -e /proc/$$/fd/3 ]; then
+    echo "[$(timestamp)] ${message}" | tee -a "$LOGFILE" >&3
+  else
+    echo "[$(timestamp)] ${message}" >&2
+  fi
+}
+
+command_exists() { command -v "$1" >/dev/null 2>&1; }
+SYSTEMCTL=$(command -v systemctl || true)
 
 #Set Batctl version if you want a spcecific version. If needed uncomment.
 #BATCTL_VERSION=
@@ -30,7 +56,7 @@ error() { if [ -e /proc/$$/fd/3 ]; then echo "[$(date +%F %T)] ERROR: $*" | tee 
 WANT_BRCTL=1
 
 #=== Root only =================================================================
-echo "Check for ROOT."
+info "Check for ROOT."
 
 if [[ $EUID -ne 0 ]]; then
   log "Run as root (sudo) — exiting."
@@ -38,11 +64,11 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-echo "Root check complete."
+info "Root check complete."
 
 
 #=== Logging ===================================================================
-echo "Creating log file."
+info "Creating log file."
 
 install -m 0640 -o root -g adm /dev/null "$LOGFILE"
 exec 3>&1
@@ -68,6 +94,7 @@ info "Housekeeping starting."
 
 TARGET_USER=${SUDO_USER:-$USER}
 TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
+HOME_DIR=${TARGET_HOME:-/root}
 [ -n "$TARGET_HOME" ] && [ -d "$TARGET_HOME/linux" ] && rm -rf "$TARGET_HOME/linux" || true
 
 info "Housekeeping is complete."
@@ -273,17 +300,28 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 # Install Reticulum into system Python
-if pip3 install --upgrade rns; then
-  log "Reticulum installed successfully: $(pip3 show rns 2>/dev/null | grep Version || echo 'unknown version')"
+PIP_INSTALL=(python3 -m pip install --upgrade)
+if python3 -m pip install --help 2>&1 | grep -q -- '--break-system-packages'; then
+  PIP_INSTALL+=(--break-system-packages)
+fi
+
+if "${PIP_INSTALL[@]}" rns; then
+  log "Reticulum installed successfully: $(python3 -m pip show rns 2>/dev/null | grep Version || echo 'unknown version')"
 else
   error "Reticulum installation failed."
+  exit 1
+fi
+
+RNSD_PATH=$(command -v rnsd || true)
+if [ -z "$RNSD_PATH" ]; then
+  error "Unable to locate rnsd in PATH after installation."
   exit 1
 fi
 
 # Create Reticulum systemd service
 info "Creating Reticulum systemd service."
 
-cat >/etc/systemd/system/rnsd.service <<'EOF'
+cat >/etc/systemd/system/rnsd.service <<EOF
 [Unit]
 Description=Reticulum Network Stack Daemon
 After=network-online.target
@@ -291,7 +329,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/rnsd
+ExecStart=$RNSD_PATH
 Restart=on-failure
 RestartSec=5
 StandardOutput=syslog
@@ -303,30 +341,35 @@ WantedBy=multi-user.target
 EOF
 
 # Enable and start service
-systemctl daemon-reexec
-systemctl enable rnsd.service
-systemctl start rnsd.service
+if [ -n "$SYSTEMCTL" ]; then
+  $SYSTEMCTL daemon-reload
+  $SYSTEMCTL enable rnsd.service
+  $SYSTEMCTL restart rnsd.service
+else
+  warn "systemctl not available; please enable rnsd manually."
+fi
 
 info "Reticulum systemd service is set up."
 
 info "==> Version check:"
-if $RNSD_PATH --version; then
+if "$RNSD_PATH" --version; then
   info "rnsd version OK."
 else
-  echo "!! rnsd --failed. Check logs."
+  warn "rnsd version check failed; inspect logs if the service does not start."
 fi
 
-if need_cmd rnstatus; then
+if command_exists rnstatus; then
   rnstatus --version || true
+  info "Ready. Reticulum runs."
+  info "Configs: $HOME_DIR/.config/reticulum"
+  rnstatus || true
+else
+  warn "rnstatus command not found. Reticulum may need manual verification."
 fi
 
-  # Check service staus
-sudo systemctl --no-pager --full status rnsd || true
-
-echo "Ready. Reticulum runs."
-echo "Configs: $HOME_DIR/.config/reticulum"
-
-rnstatus
+if [ -n "$SYSTEMCTL" ]; then
+  $SYSTEMCTL --no-pager --full status rnsd || true
+fi
 
 info "Reticulum (RNS) is installed."
 
@@ -338,11 +381,34 @@ info "Installing MediaMTX."
 install -d -m 0755 /opt/mediamtx
 cd /opt/mediamtx
 
+# Determine archive matching architecture
+ARCH=$(dpkg --print-architecture)
+case "$ARCH" in
+  armhf)
+    MEDIAMTX_ARCHIVE=mediamtx_linux_armv7.tar.gz
+    ;;
+  arm64)
+    MEDIAMTX_ARCHIVE=mediamtx_linux_arm64v8.tar.gz
+    ;;
+  amd64)
+    MEDIAMTX_ARCHIVE=mediamtx_linux_amd64.tar.gz
+    ;;
+  *)
+    warn "Unsupported architecture '$ARCH'; defaulting to amd64 build."
+    MEDIAMTX_ARCHIVE=mediamtx_linux_amd64.tar.gz
+    ;;
+esac
+
+MEDIAMTX_URL="https://github.com/bluenviron/mediamtx/releases/latest/download/${MEDIAMTX_ARCHIVE}"
+
 # Download latest release from GitHub
-if command -v curl >/dev/null 2>&1; then
-  curl -L -o mediamtx.tar.gz https://github.com/bluenviron/mediamtx/releases/latest/download/mediamtx_linux_amd64.tar.gz
+if command_exists curl; then
+  curl -fsSL -o mediamtx.tar.gz "$MEDIAMTX_URL"
+elif command_exists wget; then
+  wget -O mediamtx.tar.gz "$MEDIAMTX_URL"
 else
-  wget -O mediamtx.tar.gz https://github.com/bluenviron/mediamtx/releases/latest/download/mediamtx_linux_amd64.tar.gz
+  error "Neither curl nor wget is available to download MediaMTX."
+  exit 1
 fi
 
 # Extract and install
@@ -355,6 +421,10 @@ if [ ! -x /opt/mediamtx/mediamtx ]; then
   exit 1
 fi
 log "MediaMTX Installed: $(/opt/mediamtx/mediamtx --version 2>/dev/null || echo 'version check failed')"
+
+if [ ! -f /opt/mediamtx/mediamtx.yml ]; then
+  warn "MediaMTX configuration file (mediamtx.yml) not found; using built-in defaults."
+fi
 
 # Systemd service for MediaMTX
 info "Creating MediaMTX systemd service."
@@ -378,9 +448,13 @@ WantedBy=multi-user.target
 EOF
 
 # Enable and start the service
-systemctl daemon-reexec
-systemctl enable mediamtx.service
-systemctl start mediamtx.service
+if [ -n "$SYSTEMCTL" ]; then
+  $SYSTEMCTL daemon-reload
+  $SYSTEMCTL enable mediamtx.service
+  $SYSTEMCTL restart mediamtx.service
+else
+  warn "systemctl not available; please enable mediamtx manually."
+fi
 
 info "MediaMTX installation and service setup complete."
 
