@@ -23,6 +23,13 @@ log()   { echo "[$(date +%F %T)] $*" >>"$LOGFILE"; }
 info()  { if [ -e /proc/$$/fd/3 ]; then echo "[$(date +%F %T)] INFO: $*" | tee -a "$LOGFILE" >&3; else echo "INFO: $*"; fi; }
 error() { if [ -e /proc/$$/fd/3 ]; then echo "[$(date +%F %T)] ERROR: $*" | tee -a "$LOGFILE" >&3; else echo "ERROR: $*" >&2; fi; }
 
+need_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    error "Required command '$1' not found"
+    return 1
+  fi
+}
+
 #Set Batctl version if you want a spcecific version. If needed uncomment.
 #BATCTL_VERSION=
 
@@ -310,10 +317,15 @@ systemctl start rnsd.service
 info "Reticulum systemd service is set up."
 
 info "==> Version check:"
-if $RNSD_PATH --version; then
-  info "rnsd version OK."
+RNSD_PATH="${RNSD_PATH:-$(command -v rnsd || true)}"
+if [ -z "$RNSD_PATH" ]; then
+  error "rnsd binary not found in PATH"
 else
-  echo "!! rnsd --failed. Check logs."
+  if "$RNSD_PATH" --version; then
+    info "rnsd version OK."
+  else
+    echo "!! rnsd --failed. Check logs."
+  fi
 fi
 
 if need_cmd rnstatus; then
@@ -321,10 +333,10 @@ if need_cmd rnstatus; then
 fi
 
   # Check service staus
-sudo systemctl --no-pager --full status rnsd || true
+systemctl --no-pager --full status rnsd || true
 
 echo "Ready. Reticulum runs."
-echo "Configs: $HOME_DIR/.config/reticulum"
+echo "Configs: ${TARGET_HOME}/.config/reticulum"
 
 rnstatus
 
@@ -338,11 +350,29 @@ info "Installing MediaMTX."
 install -d -m 0755 /opt/mediamtx
 cd /opt/mediamtx
 
-# Download latest release from GitHub
+# Download latest release from GitHub (arch-aware)
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64|amd64)
+    MTX_PKG="mediamtx_linux_amd64.tar.gz"
+    ;;
+  aarch64|arm64)
+    MTX_PKG="mediamtx_linux_arm64v8.tar.gz"
+    ;;
+  armv7l|armv6l|armhf)
+    MTX_PKG="mediamtx_linux_armv7.tar.gz"
+    ;;
+  *)
+    error "Unsupported architecture for MediaMTX: $ARCH"
+    exit 1
+    ;;
+esac
+MTX_URL="https://github.com/bluenviron/mediamtx/releases/latest/download/${MTX_PKG}"
+
 if command -v curl >/dev/null 2>&1; then
-  curl -L -o mediamtx.tar.gz https://github.com/bluenviron/mediamtx/releases/latest/download/mediamtx_linux_amd64.tar.gz
+  curl -L -o mediamtx.tar.gz "$MTX_URL"
 else
-  wget -O mediamtx.tar.gz https://github.com/bluenviron/mediamtx/releases/latest/download/mediamtx_linux_amd64.tar.gz
+  wget -O mediamtx.tar.gz "$MTX_URL"
 fi
 
 # Extract and install
