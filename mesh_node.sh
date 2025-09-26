@@ -425,7 +425,7 @@ info "Reboot or not"
 read -r -p "Do you want to reboot the system? [Y/n]: " REPLY || REPLY=""
 REPLY="${REPLY:-Y}"
 if [[ "$REPLY" =~ ^[Yy]$ ]]; then
-  info "Initiating reboot. 👋"
+  info "Initiating reboot."
   /sbin/shutdown -r now
 else
   info "we will exit the script now."
