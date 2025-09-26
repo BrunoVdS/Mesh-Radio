@@ -1,4 +1,4 @@
-!/usr/bin/env bash
+#!/usr/bin/env bash
 
 # Pi 5 APK Hotspot Setup (v3): wlan0 AP + dnsmasq + nginx (static APK downloads only) + nftables
 # Optional: captive-portal-like behavior via DNS hijack; nodogsplash can be toggled but is OFF by default.
@@ -140,9 +140,17 @@ configure_nginx() {
     deny all;
 
     root ${APK_DIR};
-    autoindex on; # directory listing; set to off if you provide index.html
+    index index.html;
 
     types { application/vnd.android.package-archive apk; }
+
+    location / {
+        autoindex on; # directory listing; set to off if you provide index.html
+        try_files \$uri \$uri/ =404;
+        limit_except GET HEAD {
+            deny all;
+        }
+    }
 
     location ~* \\.apk$ {
         add_header Content-Type \"application/vnd.android.package-archive\";
@@ -150,6 +158,9 @@ configure_nginx() {
         tcp_nopush on;
         aio on;
         sendfile on;
+        limit_except GET HEAD {
+            deny all;
+        }
     }
   }"
   ln -sf "$site" /etc/nginx/sites-enabled/apk
