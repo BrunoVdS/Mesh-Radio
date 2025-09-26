@@ -2,7 +2,7 @@
 
 # Pi 5 APK Hotspot Setup (v3): wlan0 AP + dnsmasq + nginx (static APK downloads only) + nftables
 # Optional: captive-portal-like behavior via DNS hijack; nodogsplash can be toggled but is OFF by default.
-# Usage: sudo ./setup_apk_ap_v3.sh
+# Usage: sudo ./mesh_server.sh   (or --refresh-index to rebuild the landing page)
 
 set -euo pipefail
 
@@ -78,6 +78,142 @@ install_packages() {
   DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}"
 }
 
+format_size() {
+  local bytes="$1"
+  if command -v numfmt >/dev/null 2>&1; then
+    numfmt --to=iec --suffix=B "$bytes" 2>/dev/null || echo "${bytes} B"
+  else
+    echo "${bytes} B"
+  fi
+}
+
+generate_checksums() {
+  (cd "$APK_DIR/android" && shopt -s nullglob && files=(*.apk *.aab); if (( ${#files[@]} )); then sha256sum "${files[@]}" > SHA256SUMS.txt; else rm -f SHA256SUMS.txt; fi) || true
+  (cd "$APK_DIR/ios" && shopt -s nullglob && files=(*.ipa); if (( ${#files[@]} )); then sha256sum "${files[@]}" > SHA256SUMS.txt; else rm -f SHA256SUMS.txt; fi) || true
+}
+
+generate_download_index() {
+  local index_path="${APK_DIR}/index.html"
+  local continue_path="${APK_DIR}/continue.html"
+  shopt -s nullglob
+  local -a android_files=("${APK_DIR}/android"/*.apk "${APK_DIR}/android"/*.aab)
+  local -a ios_files=("${APK_DIR}/ios"/*.ipa)
+  shopt -u nullglob
+
+  {
+    cat <<EOF
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${SSID} Downloads</title>
+<style>
+body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Ubuntu,Cantarell,"Helvetica Neue",Arial,sans-serif;max-width:840px;margin:2rem auto;padding:0 1.25rem;background:#f7f7f9;color:#212529}
+header{text-align:center;margin-bottom:2rem}
+.platform{background:#fff;border-radius:12px;padding:1.25rem;margin-bottom:1.5rem;box-shadow:0 6px 18px rgba(31,35,40,.08)}
+.platform h2{margin-top:0;font-size:1.4rem}
+.download-list{list-style:none;padding:0;margin:0}
+.download-list li{display:flex;justify-content:space-between;align-items:center;padding:.65rem .75rem;border-radius:8px;border:1px solid #e2e3e5;margin-bottom:.65rem;background:#fafafa}
+.download-list li a{color:#0d6efd;text-decoration:none;font-weight:600;word-break:break-word}
+.download-list li a:hover{text-decoration:underline}
+.filesize{font-size:.9rem;color:#6c757d;margin-left:1rem;white-space:nowrap}
+.empty{margin:0;color:#6c757d}
+.checksums{margin-top:1rem}
+.checksums a{color:#495057}
+.nodownload{text-align:center}
+.nodownload .button{display:inline-block;padding:.75rem 1.5rem;background:#0d6efd;color:#fff;border-radius:999px;text-decoration:none;font-weight:600;margin-top:.5rem}
+.nodownload .button:hover{background:#0b5ed7}
+footer{margin-top:2.5rem;font-size:.9rem;color:#6c757d;text-align:center}
+</style>
+</head><body>
+<header>
+  <h1>Welcome to ${SSID}</h1>
+  <p>Select the downloads for your device or skip if you do not need any files.</p>
+</header>
+<main>
+  <section id="android" class="platform">
+    <h2>Android builds</h2>
+    <p>Installable APK/AAB files for Android phones and tablets.</p>
+EOF
+
+    if (( ${#android_files[@]} )); then
+      echo "    <ul class=\"download-list\">"
+      local fname bytes human
+      for path in "${android_files[@]}"; do
+        [[ -f "$path" ]] || continue
+        fname="${path##*/}"
+        bytes=$(stat -c %s "$path" 2>/dev/null || stat -f %z "$path" 2>/dev/null || echo 0)
+        human=$(format_size "$bytes")
+        printf '      <li><a href="/android/%s" download>%s</a><span class="filesize">%s</span></li>\n' "$fname" "$fname" "$human"
+      done
+      echo "    </ul>"
+      if [[ -f "${APK_DIR}/android/SHA256SUMS.txt" ]]; then
+        echo '    <p class="checksums"><a href="/android/SHA256SUMS.txt">Verify checksums</a></p>'
+      fi
+    else
+      echo '    <p class="empty">No Android builds uploaded yet.</p>'
+    fi
+
+    cat <<'EOF'
+  </section>
+  <section id="ios" class="platform">
+    <h2>iOS builds</h2>
+    <p>IPA files for iPhone and iPad (requires appropriate provisioning).</p>
+EOF
+
+    if (( ${#ios_files[@]} )); then
+      echo "    <ul class=\"download-list\">"
+      local fname bytes human
+      for path in "${ios_files[@]}"; do
+        [[ -f "$path" ]] || continue
+        fname="${path##*/}"
+        bytes=$(stat -c %s "$path" 2>/dev/null || stat -f %z "$path" 2>/dev/null || echo 0)
+        human=$(format_size "$bytes")
+        printf '      <li><a href="/ios/%s" download>%s</a><span class="filesize">%s</span></li>\n' "$fname" "$fname" "$human"
+      done
+      echo "    </ul>"
+      if [[ -f "${APK_DIR}/ios/SHA256SUMS.txt" ]]; then
+        echo '    <p class="checksums"><a href="/ios/SHA256SUMS.txt">Verify checksums</a></p>'
+      fi
+    else
+      echo '    <p class="empty">No iOS builds uploaded yet.</p>'
+    fi
+
+    cat <<'EOF'
+  </section>
+  <section class="platform nodownload">
+    <h2>Don't need any downloads?</h2>
+    <p>You can simply close this page or tap below to confirm you are ready.</p>
+    <p><a class="button" href="/continue.html">Continue without download</a></p>
+  </section>
+</main>
+<footer>
+  <p>Admins: upload Android files to ${APK_DIR}/android and iOS files to ${APK_DIR}/ios.</p>
+</footer>
+</body></html>
+EOF
+  } >"$index_path"
+  chmod 0644 "$index_path"
+
+  cat >"$continue_path" <<EOF
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Continue</title>
+<style>body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Ubuntu,Cantarell,"Helvetica Neue",Arial,sans-serif;text-align:center;max-width:640px;margin:20vh auto;padding:0 1.5rem;color:#212529}</style>
+</head><body>
+<h1>You're all set</h1>
+<p>If you don't need to download anything, you can now close this page or open another website/app.</p>
+<p><a href="/">Back to downloads</a></p>
+</body></html>
+EOF
+  chmod 0644 "$continue_path"
+}
+
+refresh_download_index() {
+  generate_checksums
+  generate_download_index
+}
+
 configure_dhcpcd() {
   local conf=/etc/dhcpcd.conf
   local S="# BEGIN apk-ap v3"
@@ -126,7 +262,7 @@ log-dhcp"
 }
 
 configure_nginx() {
-  mkdir -p "$APK_DIR"
+  mkdir -p "$APK_DIR"{"","/android","/ios"}
   chown -R "$SUDO_USER:${SUDO_USER:-$USER}" "$APK_DIR" 2>/dev/null || true
 
   # Site config
@@ -140,42 +276,30 @@ configure_nginx() {
     deny all;
 
     root ${APK_DIR};
-    autoindex on; # directory listing; set to off if you provide index.html
+    types { application/vnd.android.package-archive apk; application/octet-stream ipa; }
 
-    types { application/vnd.android.package-archive apk; }
+    location / {
+        try_files /index.html =404;
+    }
 
-    location ~* \\.apk$ {
-        add_header Content-Type \"application/vnd.android.package-archive\";
+    location /android/ {
+        autoindex on;
         add_header Content-Disposition \"attachment\";
-        tcp_nopush on;
-        aio on;
-        sendfile on;
+    }
+
+    location /ios/ {
+        autoindex on;
+        add_header Content-Disposition \"attachment\";
+    }
+
+    location = /continue.html {
+        try_files /continue.html =404;
     }
   }"
   ln -sf "$site" /etc/nginx/sites-enabled/apk
   rm -f /etc/nginx/sites-enabled/default
 
-  # Minimal landing page (optional)
-  if [[ ! -f "${APK_DIR}/index.html" ]]; then
-    cat >"${APK_DIR}/index.html" <<EOF
-<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>APK Downloads</title>
-<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,\n Cantarell,\"Helvetica Neue\",Arial; max-width:720px; margin:2rem auto; padding:0 1rem;}\ncode{background:#f3f3f3;padding:.1rem .3rem;border-radius:4px}</style>
-</head><body>
-<h1>APK Downloads</h1>
-<p>Connected to <strong>${SSID}</strong>? Great. Tap an APK below to download.</p>
-<ul>
-<!-- NGINX autoindex will list files if you prefer; otherwise add links here. -->
-</ul>
-<p>SHA256 sums: <a href="/SHA256SUMS.txt">SHA256SUMS.txt</a></p>
-</body></html>
-EOF
-  fi
-
-  # Generate checksums if APKs exist
-  (cd "$APK_DIR" && ls *.apk >/dev/null 2>&1 && sha256sum *.apk > SHA256SUMS.txt) || true
+  refresh_download_index
 
   # QR code for convenience
   qrencode -o "${APK_DIR}/apk-qr.png" "http://${AP_IP}/" || true
@@ -245,12 +369,17 @@ configure_nodogsplash() {
   backup_file "$html"
   cat >"$html" <<EOF
 <!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<style>body{font-family:system-ui;max-width:680px;margin:2rem auto;padding:0 1rem}</style>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Ubuntu,Cantarell,"Helvetica Neue",Arial,sans-serif;max-width:680px;margin:2rem auto;padding:0 1rem;color:#212529}</style>
 <title>Welcome</title></head>
 <body>
 <h1>Welcome to ${SSID}</h1>
-<p>Tap to continue: <a href=\"http://${AP_IP}/\">APK Downloads</a></p>
+<p>You are connected to the local download hotspot. Choose what to do next:</p>
+<ul>
+  <li><a href=\"http://${AP_IP}/\">Browse available downloads</a></li>
+  <li><a href=\"http://${AP_IP}/continue.html\">Continue without downloading</a></li>
+</ul>
+<p>If you later need files again, return to <a href=\"http://${AP_IP}/\">http://${AP_IP}/</a>.</p>
 </body></html>
 EOF
   systemctl enable --now nodogsplash || true
@@ -261,12 +390,31 @@ post_summary() {
   echo "SSID: ${SSID}"
   echo "Passphrase: ${PASSPHRASE}"
   echo "AP IP: ${AP_IP}"
-  echo "APK dir: ${APK_DIR}"
+  echo "Download root: ${APK_DIR}"
   echo "Browse: http://${AP_IP}/"
-  echo "Place your .apk files into ${APK_DIR} then run: (cd ${APK_DIR} && sha256sum *.apk > SHA256SUMS.txt)"
+  cat <<EOF
+Upload instructions:
+  • Android files → ${APK_DIR}/android (APK/AAB)
+  • iOS files → ${APK_DIR}/ios (IPA)
+  • Refresh landing page & checksums after uploading: sudo ./mesh_server.sh --refresh-index
+EOF
+}
+
+refresh_index_only() {
+  need_root
+  mkdir -p "$APK_DIR"{"","/android","/ios"}
+  chown -R "$SUDO_USER:${SUDO_USER:-$USER}" "$APK_DIR" 2>/dev/null || true
+  refresh_download_index
+  systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+  echo "Updated ${APK_DIR}/index.html with current downloads."
 }
 
 main() {
+  if [[ "${1:-}" == "--refresh-index" ]]; then
+    refresh_index_only
+    return 0
+  fi
+
   need_root
   install_packages
   configure_dhcpcd
