@@ -13,12 +13,13 @@ trap 'error "Unexpected error on line $LINENO"; exit 1' ERR
 
 
 #=== Config ====================================================================
-LOGFILE="/var/log/mesh-install.log"
-
 DEBIAN_FRONTEND=noninteractive
 export DEBIAN_FRONTEND
 
-  # Log helpers
+  # Log file locatie
+LOGFILE="/var/log/mesh-install.log"
+
+  # Log helpers (log, info, warn and error)
 timestamp() { date +%F\ %T; }
 log()   { echo "[$(timestamp)] $*" >>"$LOGFILE"; }
 info()  {
@@ -46,21 +47,8 @@ error() {
   fi
 }
 
-command_exists() { command -v "$1" >/dev/null 2>&1; }
+command_exists() { command -v "$1" >/dev/null ; }
 SYSTEMCTL=$(command -v systemctl || true)
-
-apt_safe() {
-  if (( APT_ONLINE )); then
-    if apt-get "$@"; then
-      return 0
-    fi
-    warn "apt-get $* failed; continuing."
-    return 1
-  fi
-
-  warn "Skipping 'apt-get $*' because apt networking is unavailable."
-  return 1
-}
 
 #Set Batctl version if you want a spcecific version. If needed uncomment.
 #BATCTL_VERSION=
@@ -69,33 +57,38 @@ apt_safe() {
 WANT_BRCTL=1
 
 #=== Root only =================================================================
-info "Check for ROOT."
+echo "Check for ROOT."
 
 if [[ $EUID -ne 0 ]]; then
-  log "Run as root (sudo) — exiting."
-  info "Please make sure you are running the script while being root - Cancelling the script."
+  echo "Run as root (sudo)."
+else
+  echo "Please make sure you are running the script while being root - Cancelling the script."
+  sleep 10
   exit 1
 fi
 
-info "Root check complete."
+echo "Root check complete."
 
 
 #=== Logging ===================================================================
-info "Creating log file."
+echo "Creating log file."
 
 install -m 0640 -o root -g adm /dev/null "$LOGFILE"
 exec 3>&1
 exec >>"$LOGFILE" 2>&1
 
+
 info "Log file is created."
 
-
-
+info ""
+info ""
 info "================================================="
 info "===                                           ==="
 info "===    Installation of the Mesh Radio v1.0.   ==="
 info "===                                           ==="
 info "================================================="
+info ""
+info ""
 
 
 
