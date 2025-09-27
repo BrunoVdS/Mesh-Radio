@@ -56,12 +56,10 @@ SYSTEMCTL=$(command -v systemctl || true)
 # version if you want a spcecific version. If Bridge-Utils is not needen comment out by adding # in fornt of the line.
 WANT_BRCTL=1
 
-#=== Root only =================================================================
+#=== Root check =================================================================
 echo "Check for ROOT."
 
 if [[ $EUID -ne 0 ]]; then
-  echo "Run as root (sudo)."
-else
   echo "Please make sure you are running the script while being root - Cancelling the script."
   sleep 10
   exit 1
