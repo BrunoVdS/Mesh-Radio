@@ -1,27 +1,36 @@
 #!/bin/bash
 
 
-set -Eeuo pipefail
-trap 'error "Unexpected error on line $LINENO"; exit 1' ERR
-
-
 # ==============================================================================
 
 ###                       FRESH NODE SETUP SCRIPT                            ###
 
+###          Version 1.0
+
 # ==============================================================================
 
 
-#=== Config ====================================================================
+  # Exit on errors, unset vars, or failed pipes; show an error with line number if any command fails
+set -Eeuo pipefail
+trap 'error "Unexpected error on line $LINENO"; exit 1' ERR
+
+
+# === Config ===================================================================
+
+  # Forcing apt/dpkg to run without prompting for user input, letting the script perform package operations unattended.
 DEBIAN_FRONTEND=noninteractive
 export DEBIAN_FRONTEND
 
-  # Log file locatie
+# === LOGFILE - mesh-install.log
+  # Log file location
 LOGFILE="/var/log/mesh-install.log"
 
-  # Log helpers (log, info, warn and error)
+  # Create timestamp variable
 timestamp() { date +%F\ %T; }
+
+  # Log helpers (log, info, warn and error)
 log()   { echo "[$(timestamp)] $*" >>"$LOGFILE"; }
+
 info()  {
   local message="INFO: $*"
   if [ -e /proc/$$/fd/3 ]; then
@@ -30,6 +39,7 @@ info()  {
     echo "[$(timestamp)] ${message}"
   fi
 }
+
 warn()  {
   local message="WARN: $*"
   if [ -e /proc/$$/fd/3 ]; then
@@ -38,6 +48,7 @@ warn()  {
     echo "[$(timestamp)] ${message}"
   fi
 }
+
 error() {
   local message="ERROR: $*"
   if [ -e /proc/$$/fd/3 ]; then
@@ -47,6 +58,7 @@ error() {
   fi
 }
 
+  # Define a function to check if a command exists; store path to systemctl if found, else empty
 command_exists() { command -v "$1" >/dev/null ; }
 SYSTEMCTL=$(command -v systemctl || true)
 
@@ -56,7 +68,7 @@ SYSTEMCTL=$(command -v systemctl || true)
 # version if you want a spcecific version. If Bridge-Utils is not needen comment out by adding # in fornt of the line.
 WANT_BRCTL=1
 
-#=== Root check =================================================================
+#=== Root only =================================================================
 echo "Check for ROOT."
 
 if [[ $EUID -ne 0 ]]; then
@@ -89,9 +101,9 @@ info ""
 info ""
 
 
-
 info "Summary: OS=$(. /etc/os-release; echo $PRETTY_NAME), Kernel=$(uname -r), batctl=$(batctl -v | head -n1 || echo n/a)"
 
+info "Run as root (sudo)."
 
 #=== Housekeeping ==============================================================
 info "Housekeeping starting."
@@ -107,25 +119,12 @@ info "Housekeeping is complete."
 #=== System update =============================================================
 info "Upgrade and Update of the operatingsystem starting."
 
-APT_ONLINE=1
-
-if ! apt-get update -y; then
-  warn "apt-get update failed. This environment may not have outbound APT network access."
-  APT_ONLINE=0
-fi
-
-if (( APT_ONLINE )); then
-  if apt-get -o Dpkg::Options::="--force-confdef" \
+apt-get update -y
+apt-get -o Dpkg::Options::="--force-confdef" \
         -o Dpkg::Options::="--force-confold" \
-        dist-upgrade -y; then
-    info "Update and Upgrade of the operatingsystem is complete."
-  else
-    warn "dist-upgrade failed; continuing with existing packages."
-    APT_ONLINE=0
-  fi
-else
-  warn "Skipping dist-upgrade because apt-get update failed."
-fi
+        dist-upgrade -y
+
+info "Update and Upgrade of the operatingsystem is complete."
 
 
 #=== Base packages==============================================================
@@ -153,33 +152,29 @@ PACKAGES=(
 
 info "Package install starting."
 
-if (( APT_ONLINE )); then
   # Automate install (faster)
-  if apt_safe install -y --no-install-recommends "${PACKAGES[@]}"; then
-    info "Bulk install/upgrade succeeded."
-  else
-    info "Bulk install failed; falling back to per-package handling."
-
-    # Fallback: per-packages processing
-    for pkg in "${PACKAGES[@]}"; do
-      info "Processing: $pkg ===="
-      if ! apt-cache policy "$pkg" | grep -q "Candidate:"; then
-        log "Warning: package '$pkg' not found in apt policy. Skipping."
-        continue
-      fi
-      if dpkg -s "$pkg" >/dev/null 2>&1; then
-        log "'$pkg' already installed. Attempting upgrade (if available)..."
-        apt_safe install --only-upgrade -y "$pkg" >/dev/null || \
-          warn "Upgrade failed for $pkg (continuing)."
-      else
-        log "'$pkg' not installed. Installing now..."
-        apt_safe install -y --no-install-recommends "$pkg" >/dev/null || \
-          warn "Installation failed for $pkg (continuing)."
-      fi
-    done
-  fi
+if apt-get install -y --no-install-recommends "${PACKAGES[@]}"; then
+  info "Bulk install/upgrade succeeded."
 else
-  warn "Skipping package installation because apt networking is unavailable."
+  info "Bulk install failed; falling back to per-package handling."
+
+  # Fallback: per-packages processing
+for pkg in "${PACKAGES[@]}"; do
+    info "Processing: $pkg ===="
+    if ! apt-cache policy "$pkg" | grep -q "Candidate:"; then
+      log "Warning: package '$pkg' not found in apt policy. Skipping."
+      continue
+    fi
+    if dpkg -s "$pkg" >/dev/null 2>&1; then
+      log "'$pkg' already installed. Attempting upgrade (if available)..."
+      apt-get install --only-upgrade -y "$pkg" || \
+         error "Upgrade failed for $pkg (continuing)."
+    else
+      log "'$pkg' not installed. Installing now..."
+      apt-get install -y --no-install-recommends "$pkg" || \
+        error "Installation failed for $pkg (continuing)."
+    fi
+  done
 fi
 
 info "Installation of all packages is complete."
@@ -200,16 +195,16 @@ else
 
   if echo "$OS_ID" | grep -qi 'ubuntu'; then
     # Ubuntu on Raspberry Pi: Install extra modules specific to the current setup.'
-    apt_safe install -y "linux-modules-extra-$(uname -r)" >/dev/null || true
+    apt-get install -y "linux-modules-extra-$(uname -r)" || true
     # Headers  / DKMS
-    apt_safe install -y "linux-headers-$(uname -r)" >/dev/null || true
+    apt-get install -y "linux-headers-$(uname -r)" || true
   else
     # Raspberry Pi OS (Raspbian/Debian voor Pi)
-    apt_safe install -y raspberrypi-kernel-headers >/dev/null || true
+    apt-get install -y raspberrypi-kernel-headers || true
   fi
 
   # If there are still problems, fallback to DKMS-build of B.A.T.M.A.N.-Adv
-  apt_safe install -y batman-adv-dkms >/dev/null || true
+  apt-get install -y batman-adv-dkms || true
   dpkg-reconfigure -fnoninteractive batman-adv-dkms || true
 fi
 
@@ -220,12 +215,8 @@ if ! modprobe batman-adv 2>/dev/null; then
   elif grep -qE '(^|/| )batman-adv(\.ko(\.(xz|gz|zst))?)?($| )' "/lib/modules/$(uname -r)/modules.dep" 2>/dev/null; then
     info "B.A.T.M.A.N.-Adv modulebestand is present nut loading faled; continue."
   else
-    if (( APT_ONLINE )); then
-      error "Can't load or find B.A.T.M.A.N.-Adv . Check kernel/modules/headers."
-      exit 1
-    else
-      warn "B.A.T.M.A.N.-Adv not available and apt networking offline; skipping module load."
-    fi
+    error "Can't load or find B.A.T.M.A.N.-Adv . Check kernel/modules/headers."
+    exit 1
   fi
 fi
 
@@ -238,26 +229,16 @@ info "Installation of B.A.T.M.A.N.-Adv complete."
 #=== Install Batctl =============================================================
 info "Installing Batctl."
 
-BATCTL_BUILT=0
-
-# 1) First attempt, load the module.
-if apt-cache policy batctl 2>/dev/null | grep -q "Candidate:"; then
-  if apt_safe install -y --no-install-recommends batctl >/dev/null; then
-    BATCTL_BUILT=1
+  # 1) First attempt, load the module.
+  if apt-cache policy batctl 2>/dev/null | grep -q "Candidate:"; then
+    apt-get install -y --no-install-recommends batctl
   else
-    warn "Failed to install batctl from APT."
-  fi
-else
-  log "Batctl nnot found in APT ; fall back to source code build."
+    log "Batctl nnot found in APT ; fall back to source code build."
 
-  install -d -m 0755 /usr/local/src
-  pushd /usr/local/src >/dev/null || true
+    install -d -m 0755 /usr/local/src
+    cd /usr/local/src
 
-  if (( ! APT_ONLINE )); then
-    warn "Skipping batctl source build due to limited network connectivity."
-    info "Batctl installation skipped."
-  else
-    # 2) If you want to install a specific version: export BATCTL_VERSION=2025.0 (of wat je wilt)
+  # 2) If you want to install a specific version: export BATCTL_VERSION=2025.0 (of wat je wilt)
     if [ -n "${BATCTL_VERSION:-}" ]; then
       log "Build batctl verion: ${BATCTL_VERSION}"
       # First try the release-tarball. Fallback to git.
@@ -267,7 +248,7 @@ else
         if curl -fsSLO "$URL"; then
           tar xf "$TAR"
           cd "batctl-${BATCTL_VERSION}"
-          make && make install && BATCTL_BUILT=1
+          make && make install
         else
           log "Release-tarball nor found, fall back to git tag."
           if [ -d batctl ]; then
@@ -276,20 +257,20 @@ else
             git clone https://git.open-mesh.org/batctl.git
             cd batctl && git fetch --tags && git checkout "v${BATCTL_VERSION}"
           fi
-          make && make install && BATCTL_BUILT=1
+          make && make install
         fi
       else
-        # No curl? Continue over git tag.
+        # No curl? Continu over git tag.
         if [ -d batctl ]; then
           cd batctl && git fetch --tags && git checkout "v${BATCTL_VERSION}" && git pull --ff-only
         else
           git clone https://git.open-mesh.org/batctl.git
           cd batctl && git fetch --tags && git checkout "v${BATCTL_VERSION}"
         fi
-        make && make install && BATCTL_BUILT=1
+        make && make install
       fi
     else
-      # 3) No version set: build HEAD (fastest fallback)
+    # 3) No version set: build HEAD (fastest fallback)
       if [[ -d batctl ]]; then
         cd batctl
         git pull --ff-only
@@ -297,31 +278,18 @@ else
         git clone https://git.open-mesh.org/batctl.git
         cd batctl
       fi
-      make && make install && BATCTL_BUILT=1
+      make && make install
     fi
   fi
 
-  popd >/dev/null || true
-fi
-
-# 4) Verify installation
-if ! batctl -v >/dev/null 2>&1; then
-  if (( APT_ONLINE )); then
+  # 4) Verify installation
+  if ! batctl -v >/dev/null 2>&1; then
     error "Batctl not available after install."
     exit 1
-  else
-    warn "Batctl not available; skipping verification due to offline environment."
   fi
-else
-  BATCTL_BUILT=1
   log "Batctl Installed: $(batctl -v | head -n1)."
-fi
 
-if (( BATCTL_BUILT == 1 )); then
-  info "Installation of Batctl complete."
-else
-  warn "Batctl installation incomplete."
-fi
+info "Installation of Batctl complete."
 
 
 #=== Bridge-Utils ================================================================
@@ -329,11 +297,9 @@ if [ "$WANT_BRCTL" = "1" ]; then
   info "Installing Bridge-Utils (legacy Brctl."
 
   if apt-cache policy bridge-utils | grep -q "Candidate:"; then
-    if apt_safe install -y --no-install-recommends bridge-utils >/dev/null; then
-      info "Installation of Bridge-Utils complete."
-    else
-      warn "Installation failed for bridge-utils (continuing)."
-    fi
+    apt-get install -y --no-install-recommends bridge-utils \
+      && info "Installation of Bridge-Utils complete."\
+      || error "Installation failed for bridge-utils (continuing)."
   else
     error "Warning: bridge-utils not found in APT (skipping)."
   fi
@@ -349,47 +315,24 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-# Attempt to bootstrap pip if it is missing
-if ! python3 -m pip --version >/dev/null 2>&1; then
-  if python3 -m ensurepip --upgrade --default-pip >/dev/null 2>&1; then
-    info "Bootstrapped pip via ensurepip."
-  else
-    warn "pip is not available and ensurepip failed; Reticulum installation may be skipped."
-  fi
-fi
-
 # Install Reticulum into system Python
 PIP_INSTALL=(python3 -m pip install --upgrade)
 if python3 -m pip install --help 2>&1 | grep -q -- '--break-system-packages'; then
   PIP_INSTALL+=(--break-system-packages)
 fi
 
-RNS_INSTALLED=0
 if "${PIP_INSTALL[@]}" rns; then
-  RNS_INSTALLED=1
   log "Reticulum installed successfully: $(python3 -m pip show rns 2>/dev/null | grep Version || echo 'unknown version')"
 else
-  if (( APT_ONLINE )); then
-    error "Reticulum installation failed."
-    exit 1
-  else
-    warn "Reticulum installation failed (likely offline environment)."
-  fi
+  error "Reticulum installation failed."
+  exit 1
 fi
 
 RNSD_PATH=$(command -v rnsd || true)
 if [ -z "$RNSD_PATH" ]; then
-  if (( RNS_INSTALLED )); then
-    error "Unable to locate rnsd in PATH after installation."
-    exit 1
-  else
-    warn "rnsd not found; skipping service setup due to installation failure."
-  fi
+  error "Unable to locate rnsd in PATH after installation."
+  exit 1
 fi
-
-if [ -z "$RNSD_PATH" ]; then
-  info "Skipping Reticulum service creation."
-else
 
 # Create Reticulum systemd service
 info "Creating Reticulum systemd service."
@@ -446,8 +389,6 @@ fi
 
 info "Reticulum (RNS) is installed."
 
-fi
-
 
 #=== Install MediaMTX ============================================================
 info "Installing MediaMTX."
@@ -476,50 +417,35 @@ esac
 
 MEDIAMTX_URL="https://github.com/bluenviron/mediamtx/releases/latest/download/${MEDIAMTX_ARCHIVE}"
 
-MEDIAMTX_READY=1
-
 # Download latest release from GitHub
 if command_exists curl; then
-  if ! curl -fsSL -o mediamtx.tar.gz "$MEDIAMTX_URL"; then
-    warn "Failed to download MediaMTX with curl (likely offline)."
-    MEDIAMTX_READY=0
-  fi
+  curl -fsSL -o mediamtx.tar.gz "$MEDIAMTX_URL"
 elif command_exists wget; then
-  if ! wget -O mediamtx.tar.gz "$MEDIAMTX_URL"; then
-    warn "Failed to download MediaMTX with wget (likely offline)."
-    MEDIAMTX_READY=0
-  fi
+  wget -O mediamtx.tar.gz "$MEDIAMTX_URL"
 else
   error "Neither curl nor wget is available to download MediaMTX."
-  MEDIAMTX_READY=0
+  exit 1
 fi
 
-if (( MEDIAMTX_READY )); then
-  # Extract and install
-  if tar -xzf mediamtx.tar.gz --strip-components=1; then
-    rm -f mediamtx.tar.gz
-  else
-    warn "Failed to extract MediaMTX archive."
-    MEDIAMTX_READY=0
-  fi
+# Extract and install
+tar -xzf mediamtx.tar.gz --strip-components=1
+rm -f mediamtx.tar.gz
+
+# Verify installation
+if [ ! -x /opt/mediamtx/mediamtx ]; then
+  error "MediaMTX binary not found after extraction."
+  exit 1
+fi
+log "MediaMTX Installed: $(/opt/mediamtx/mediamtx --version 2>/dev/null || echo 'version check failed')"
+
+if [ ! -f /opt/mediamtx/mediamtx.yml ]; then
+  warn "MediaMTX configuration file (mediamtx.yml) not found; using built-in defaults."
 fi
 
-if (( MEDIAMTX_READY )) && [ ! -x /opt/mediamtx/mediamtx ]; then
-  warn "MediaMTX binary not found after extraction."
-  MEDIAMTX_READY=0
-fi
+# Systemd service for MediaMTX
+info "Creating MediaMTX systemd service."
 
-if (( MEDIAMTX_READY )); then
-  log "MediaMTX Installed: $(/opt/mediamtx/mediamtx --version 2>/dev/null || echo 'version check failed')"
-
-  if [ ! -f /opt/mediamtx/mediamtx.yml ]; then
-    warn "MediaMTX configuration file (mediamtx.yml) not found; using built-in defaults."
-  fi
-
-  # Systemd service for MediaMTX
-  info "Creating MediaMTX systemd service."
-
-  cat >/etc/systemd/system/mediamtx.service <<'EOF'
+cat >/etc/systemd/system/mediamtx.service <<'EOF'
 [Unit]
 Description=MediaMTX Service
 After=network.target
@@ -537,19 +463,16 @@ SyslogIdentifier=mediamtx
 WantedBy=multi-user.target
 EOF
 
-  # Enable and start the service
-  if [ -n "$SYSTEMCTL" ]; then
-    $SYSTEMCTL daemon-reload
-    $SYSTEMCTL enable mediamtx.service
-    $SYSTEMCTL restart mediamtx.service
-  else
-    warn "systemctl not available; please enable mediamtx manually."
-  fi
-
-  info "MediaMTX installation and service setup complete."
+# Enable and start the service
+if [ -n "$SYSTEMCTL" ]; then
+  $SYSTEMCTL daemon-reload
+  $SYSTEMCTL enable mediamtx.service
+  $SYSTEMCTL restart mediamtx.service
 else
-  warn "Skipping MediaMTX installation due to download failure."
+  warn "systemctl not available; please enable mediamtx manually."
 fi
+
+info "MediaMTX installation and service setup complete."
 
 
 #=== Logrotate config ============================================================
@@ -574,12 +497,8 @@ info "Logrotate config done."
 #=== Clean up after installation is complete ====================================
 info "Clean up before end of script."
 
-if (( APT_ONLINE )); then
-  apt_safe autoremove -y >/dev/null || warn "autoremove failed."
-  apt_safe clean >/dev/null || warn "apt clean failed."
-else
-  warn "Skipping apt cleanup because apt networking is unavailable."
-fi
+apt-get autoremove -y
+apt-get clean
 
 info "Clean up finished."
 
