@@ -76,10 +76,6 @@ require_raspberry_pi_os() {
   fi
 }
 
-# ===Set Batctl version if you want a spcecific version. If needed uncomment.
-#BATCTL_VERSION=
-
-
 # === Root only =================================================================
 if [[ $EUID -ne 0 ]]; then
   error "This installer must be run as root."
@@ -238,67 +234,63 @@ sleep 10
 
 
 #=== Install Batctl =============================================================
-info "Installing Batctl."
+info "Installing Batctl (latest release)."
 
-  # 1) First attempt, load the module.
-  if apt-cache policy batctl 2>/dev/null | grep -q "Candidate:"; then
-    apt-get install -y --no-install-recommends batctl
-  else
-    log "Batctl nnot found in APT ; fall back to source code build."
+install -d -m 0755 /usr/local/src
+BATCTL_SRC_DIR=/usr/local/src/batctl
 
-    install -d -m 0755 /usr/local/src
-    cd /usr/local/src
+if [ -d "$BATCTL_SRC_DIR/.git" ]; then
+  info "Updating existing batctl sources in $BATCTL_SRC_DIR."
+  git -C "$BATCTL_SRC_DIR" fetch --tags --prune origin
+else
+  info "Cloning batctl sources into $BATCTL_SRC_DIR."
+  git clone https://git.open-mesh.org/batctl.git "$BATCTL_SRC_DIR"
+fi
 
-  # 2) If you want to install a specific version: export BATCTL_VERSION=2025.0 (of wat je wilt)
-    if [ -n "${BATCTL_VERSION:-}" ]; then
-      log "Build batctl verion: ${BATCTL_VERSION}"
-      # First try the release-tarball. Fallback to git.
-      if command -v curl >/dev/null 2>&1; then
-        TAR="batctl-${BATCTL_VERSION}.tar.gz"
-        URL="https://downloads.open-mesh.org/batman/releases/${TAR}"
-        if curl -fsSLO "$URL"; then
-          tar xf "$TAR"
-          cd "batctl-${BATCTL_VERSION}"
-          make && make install
-        else
-          log "Release-tarball nor found, fall back to git tag."
-          if [ -d batctl ]; then
-            cd batctl && git fetch --tags && git checkout "v${BATCTL_VERSION}" && git pull --ff-only
-          else
-            git clone https://git.open-mesh.org/batctl.git
-            cd batctl && git fetch --tags && git checkout "v${BATCTL_VERSION}"
-          fi
-          make && make install
-        fi
-      else
-        # No curl? Continu over git tag.
-        if [ -d batctl ]; then
-          cd batctl && git fetch --tags && git checkout "v${BATCTL_VERSION}" && git pull --ff-only
-        else
-          git clone https://git.open-mesh.org/batctl.git
-          cd batctl && git fetch --tags && git checkout "v${BATCTL_VERSION}"
-        fi
-        make && make install
-      fi
-    else
-    # 3) No version set: build HEAD (fastest fallback)
-      if [[ -d batctl ]]; then
-        cd batctl
-        git pull --ff-only
-      else
-        git clone https://git.open-mesh.org/batctl.git
-        cd batctl
-      fi
-      make && make install
-    fi
+pushd "$BATCTL_SRC_DIR" >/dev/null
+
+LATEST_TAG_COMMIT=$(git rev-list --tags --max-count=1 2>/dev/null || true)
+if [ -n "$LATEST_TAG_COMMIT" ]; then
+  LATEST_TAG=$(git describe --tags "$LATEST_TAG_COMMIT" 2>/dev/null || true)
+else
+  LATEST_TAG=""
+fi
+
+if [ -n "$LATEST_TAG" ]; then
+  info "Checking out latest batctl release: $LATEST_TAG."
+  git checkout --force "$LATEST_TAG"
+else
+  warn "Unable to determine latest batctl release tag; building from default branch."
+  git checkout --force master >/dev/null 2>&1 || \
+    git checkout --force main >/dev/null 2>&1 || true
+  CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "HEAD" ]; then
+    git pull --ff-only origin "$CURRENT_BRANCH" >/dev/null 2>&1 || true
   fi
+fi
 
-  # 4) Verify installation
-  if ! batctl -v >/dev/null 2>&1; then
-    error "Batctl not available after install."
-    exit 1
-  fi
-  log "Batctl Installed: $(batctl -v | head -n1)."
+info "Building batctl."
+make clean >/dev/null 2>&1 || true
+if ! make; then
+  popd >/dev/null
+  error "Failed to build batctl from source."
+  exit 1
+fi
+
+if ! make install; then
+  popd >/dev/null
+  error "Failed to install batctl after build."
+  exit 1
+fi
+
+popd >/dev/null
+
+# Verify installation
+if ! batctl -v >/dev/null 2>&1; then
+  error "Batctl not available after install."
+  exit 1
+fi
+log "Batctl Installed: $(batctl -v | head -n1)."
 
 info "Installation of Batctl complete."
 
