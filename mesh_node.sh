@@ -472,24 +472,27 @@ info "Changes in Raspberry OS are done"
 
 
 # === Install Java 17
-info "Installing JavaScript 17"
+info "Verifying OpenJDK 17 installation"
 
-  # Check current Java version
+REQUIRED_JAVA_MAJOR=17
+JAVA_PACKAGE="openjdk-17-jre"
+
+# Check current Java version (if any)
 if command -v java >/dev/null 2>&1; then
-    current_version=$(java -version 2>&1 | awk -F[\".] '/version/ {print $2}')
-    info "Current Java version detected: $current_version"
+  java_version_raw=$(java -version 2>&1 | awk -F '"' '/version/ {print $2}')
+  java_major_version=${java_version_raw%%.*}
+  info "Current Java version detected: ${java_version_raw:-unknown}"
 else
-    error "Java not installed."
-    current_version=0
+  warn "Java runtime not found in PATH."
+  java_major_version=0
 fi
 
-  # Install Java 17 if not present
-if [ "$current_version" -ne 17 ]; then
-    log "Installing OpenJDK 17..."
-    sudo apt update
-    sudo apt install -y openjdk-17-jre
+# Install OpenJDK 17 if not already present or wrong version
+if [ "$java_major_version" -ne "$REQUIRED_JAVA_MAJOR" ] || ! dpkg -s "$JAVA_PACKAGE" >/dev/null 2>&1; then
+  log "Installing ${JAVA_PACKAGE}..."
+  apt-get install -y "$JAVA_PACKAGE"
 else
-    info "Java 17 is installed."
+  info "OpenJDK 17 is already installed."
 fi
 
 
