@@ -322,12 +322,6 @@ sleep 10
 # === Install Reticulum =========================================================
 info "Installing Reticulum (RNS)."
 
-# Ensure Python and pip are available (already handled in base packages, but safe check)
-if ! command -v python3 >/dev/null 2>&1; then
-  error "Python3 not found. Cannot install Reticulum."
-  exit 1
-fi
-
 # Install Reticulum into system Python
 PIP_INSTALL=(python3 -m pip install --upgrade)
 if python3 -m pip install --help 2>&1 | grep -q -- '--break-system-packages'; then
@@ -451,11 +445,6 @@ info "Hostpad installed"
 
 #=== Install Flask system-wide for systemd services=============================
 info "Installing Flask"
-
-if ! command -v python3 >/dev/null 2>&1; then
-  error "Python3 is required for Flask."
-  exit 1
-fi
 
 PIP_CMD=(python3 -m pip install --upgrade)
 if python3 -m pip install --help 2>&1 | grep -q -- '--break-system-packages'; then
