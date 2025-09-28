@@ -452,10 +452,113 @@ info "Hostpad installed"
 #=== Install Flask system-wide for systemd services=============================
 info "Installing Flask"
 
-sudo pip3 install --break-system-packages flask
+if ! command -v python3 >/dev/null 2>&1; then
+  error "Python3 is required for Flask."
+  exit 1
+fi
+
+PIP_CMD=(python3 -m pip install --upgrade)
+if python3 -m pip install --help 2>&1 | grep -q -- '--break-system-packages'; then
+  PIP_CMD+=(--break-system-packages)
+fi
+
+if python3 -m pip show flask >/dev/null 2>&1; then
+  FLASK_OLD_VERSION=$(python3 -m pip show flask 2>/dev/null | awk '/Version:/ {print $2}')
+  info "Flask already present (version ${FLASK_OLD_VERSION:-unknown}); ensuring it is up to date."
+else
+  info "Flask not detected; installing now."
+fi
+
+if "${PIP_CMD[@]}" flask; then
+  FLASK_NEW_VERSION=$(python3 -m pip show flask 2>/dev/null | awk '/Version:/ {print $2}')
+  log "Flask installed successfully: version ${FLASK_NEW_VERSION:-unknown}."
+else
+  error "Failed to install or upgrade Flask."
+  exit 1
+fi
+
+FLASK_APP_DIR="/opt/mesh-flask"
+FLASK_APP_FILE="$FLASK_APP_DIR/app.py"
+FLASK_ENV_DIR="/etc/mesh"
+FLASK_ENV_FILE="$FLASK_ENV_DIR/flask.env"
+FLASK_SERVICE_FILE="/etc/systemd/system/mesh-flask.service"
+
+install -d -m 0755 "$FLASK_APP_DIR"
+if [ ! -f "$FLASK_APP_FILE" ]; then
+  info "Deploying default Flask application stub at $FLASK_APP_FILE."
+  cat >"$FLASK_APP_FILE" <<'EOF'
+from flask import Flask
+
+app = Flask(__name__)
 
 
-info "Flask is installed"
+@app.route("/")
+def index():
+    return "Mesh Flask service is running."
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
+EOF
+  chmod 0644 "$FLASK_APP_FILE"
+fi
+
+install -d -m 0755 "$FLASK_ENV_DIR"
+if [ ! -f "$FLASK_ENV_FILE" ]; then
+  info "Creating Flask environment configuration at $FLASK_ENV_FILE."
+  cat >"$FLASK_ENV_FILE" <<'EOF'
+# Environment configuration for the Mesh Flask service
+FLASK_APP=/opt/mesh-flask/app.py
+FLASK_RUN_HOST=0.0.0.0
+FLASK_RUN_PORT=5000
+EOF
+  chmod 0644 "$FLASK_ENV_FILE"
+fi
+
+FLASK_SERVICE_USER=${TARGET_USER:-root}
+if [ -z "$FLASK_SERVICE_USER" ] || [ "$FLASK_SERVICE_USER" = "root" ]; then
+  FLASK_USER_DIRECTIVE="User=root"
+  FLASK_GROUP_DIRECTIVE="Group=root"
+else
+  FLASK_USER_DIRECTIVE="User=$FLASK_SERVICE_USER"
+  FLASK_GROUP_DIRECTIVE="Group=$FLASK_SERVICE_USER"
+fi
+
+info "Configuring Flask systemd service."
+cat >"$FLASK_SERVICE_FILE" <<EOF
+[Unit]
+Description=Mesh Flask Application Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-$FLASK_ENV_FILE
+WorkingDirectory=$FLASK_APP_DIR
+ExecStart=/usr/bin/python3 -m flask run
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+$FLASK_USER_DIRECTIVE
+$FLASK_GROUP_DIRECTIVE
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+if [ -n "$SYSTEMCTL" ]; then
+  $SYSTEMCTL daemon-reload
+  $SYSTEMCTL enable mesh-flask.service
+  if ! $SYSTEMCTL restart mesh-flask.service; then
+    warn "mesh-flask.service failed to start; check journalctl -u mesh-flask.service for details."
+  fi
+  $SYSTEMCTL --no-pager --full status mesh-flask.service || true
+else
+  warn "systemctl not available; enable mesh-flask.service manually."
+fi
+
+info "Flask installation and service configuration complete."
 
 sleep 10
 
