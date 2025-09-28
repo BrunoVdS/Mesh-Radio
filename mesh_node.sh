@@ -499,13 +499,80 @@ fi
 # === Install PostgreSQL 15 and PostGIS
 info "Installing PostgreSQL 15 and PostGIS"
 
-sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-wget -O- https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/postgresql.org.gpg > /dev/null
+POSTGRES_VERSION=15
+POSTGRES_PACKAGES=(
+  "postgresql-${POSTGRES_VERSION}"
+  "postgresql-client-${POSTGRES_VERSION}"
+)
+POSTGIS_PACKAGES=(
+  "postgresql-${POSTGRES_VERSION}-postgis-3"
+  "postgresql-${POSTGRES_VERSION}-postgis-3-scripts"
+)
 
-  # Update repository database
-sudo apt-get update -y
+missing_packages=()
+for pkg in "${POSTGRES_PACKAGES[@]}" "${POSTGIS_PACKAGES[@]}"; do
+  if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+    missing_packages+=("$pkg")
+  fi
+done
 
-info "PostgreSQL 15 and and PostGIS are installed."
+if [ ${#missing_packages[@]} -eq 0 ]; then
+  info "PostgreSQL $POSTGRES_VERSION and PostGIS already installed."
+else
+  info "The following PostgreSQL/PostGIS packages are missing: ${missing_packages[*]}"
+
+  if command -v lsb_release >/dev/null 2>&1; then
+    pg_codename=$(lsb_release -cs)
+  else
+    pg_codename=$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-}" )
+  fi
+
+  if [ -z "${pg_codename:-}" ]; then
+    error "Unable to determine distribution codename for PostgreSQL repository."
+    exit 1
+  fi
+
+  pg_repo_line="deb https://apt.postgresql.org/pub/repos/apt ${pg_codename}-pgdg main"
+  pg_sources_file="/etc/apt/sources.list.d/pgdg.list"
+
+  if [ ! -f "$pg_sources_file" ] || ! grep -Fxq "$pg_repo_line" "$pg_sources_file"; then
+    info "Adding PostgreSQL APT repository ($pg_repo_line)."
+    echo "$pg_repo_line" | sudo tee "$pg_sources_file" >/dev/null
+  else
+    info "PostgreSQL APT repository already configured."
+  fi
+
+  pg_keyring="/etc/apt/trusted.gpg.d/postgresql.org.gpg"
+  if [ ! -s "$pg_keyring" ]; then
+    info "Importing PostgreSQL signing key."
+    wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | sudo tee "$pg_keyring" >/dev/null
+  else
+    info "PostgreSQL signing key already present."
+  fi
+
+  sudo apt-get update -y
+  sudo apt-get install -y "${missing_packages[@]}"
+fi
+
+if command -v psql >/dev/null 2>&1; then
+  installed_psql_version=$(psql --version | awk '{print $3}')
+  installed_psql_major=${installed_psql_version%%.*}
+  if [ "$installed_psql_major" = "$POSTGRES_VERSION" ]; then
+    info "psql version detected: ${installed_psql_version:-unknown}"
+  else
+    warn "psql version ${installed_psql_version:-unknown} detected; expected major version $POSTGRES_VERSION."
+  fi
+else
+  warn "psql command not found after installation attempt."
+fi
+
+if dpkg -s "postgresql-${POSTGRES_VERSION}-postgis-3" >/dev/null 2>&1; then
+  info "PostGIS extension package is installed."
+else
+  warn "PostGIS extension package is not installed."
+fi
+
+info "PostgreSQL installation step complete."
 
 sleep 10
 
