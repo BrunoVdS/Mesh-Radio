@@ -72,12 +72,11 @@ WANT_BRCTL=1
 echo "Check for ROOT."
 
 if [[ $EUID -ne 0 ]]; then
-  echo "Please make sure you are running the script while being root - Cancelling the script."
-  sleep 10
-  exit 1
+  echo "This script needs elevated privileges; re-running with sudo."
+  exec sudo --preserve-env=DEBIAN_FRONTEND "$0" "$@"
 fi
 
-echo "Root check complete."
+echo "Root check complete (running as $(id -un))."
 
 
 #=== Logging ===================================================================
