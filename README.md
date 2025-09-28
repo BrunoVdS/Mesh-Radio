@@ -1,7 +1,6 @@
 Mesh radio V1.0
 
-Istall script
-  In development
+Install script - **In development**
 
 Running the node installer
 -------------------------
