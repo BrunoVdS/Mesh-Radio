@@ -59,6 +59,23 @@ error() {
 command_exists() { command -v "$1" >/dev/null ; }
 SYSTEMCTL=$(command -v systemctl || true)
 
+# === OS validation =============================================================
+require_raspberry_pi_os() {
+  if [ ! -r /etc/os-release ]; then
+    error "Unable to detect operating system (missing /etc/os-release)."
+    exit 1
+  fi
+
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  RPI_OS_PRETTY_NAME=${PRETTY_NAME:-unknown}
+
+  if [[ ${ID:-} != "raspbian" ]] && [[ ${NAME:-} != *"Raspberry Pi"* ]] && [[ ${PRETTY_NAME:-} != *"Raspberry Pi"* ]]; then
+    error "Unsupported operating system: ${RPI_OS_PRETTY_NAME}. This installer only supports Raspberry Pi OS."
+    exit 1
+  fi
+}
+
 # ===Set Batctl version if you want a spcecific version. If needed uncomment.
 #BATCTL_VERSION=
 
@@ -66,19 +83,14 @@ SYSTEMCTL=$(command -v systemctl || true)
 WANT_BRCTL=1
 
 # === Root only =================================================================
-echo "Check for ROOT."
-
 if [[ $EUID -ne 0 ]]; then
-  echo "This script needs elevated privileges; attempting to re-run with sudo."
-  if command -v sudo >/dev/null 2>&1; then
-    exec sudo --preserve-env=DEBIAN_FRONTEND,BATCTL_VERSION,LOGFILE bash "$0" "$@"
-  else
-    echo "sudo is not available. Please run this script as root." >&2
-    exit 1
-  fi
+  error "This installer must be run as root."
+  exit 1
 fi
 
-echo "Root check complete, (running as $(id -un))."
+require_raspberry_pi_os
+
+info "Running as root (user $(id -un))."
 
 
 # === Logging ===================================================================
@@ -101,14 +113,16 @@ info ""
 info ""
 
   # Add system info
-info "Summary: OS=$(. /etc/os-release; echo $PRETTY_NAME), Kernel=$(uname -r), batctl=$(batctl -v | head -n1 || echo n/a)"
+info "Summary: OS=${RPI_OS_PRETTY_NAME:-$(. /etc/os-release; echo $PRETTY_NAME)}, Kernel=$(uname -r), batctl=$(batctl -v | head -n1 || echo n/a)"
 
   #add some info that before did not got logged,
 info "Log file is created."
 info "location: /var/log/mesh-install.log"
 
+info "Detected operating system: ${RPI_OS_PRETTY_NAME:-unknown}."
+
   # Add we are root
-info "Run as root (sudo)."
+info "Confirmed running as root."
 
 # === Housekeeping ==============================================================
 info "Housekeeping starting."
@@ -395,19 +409,34 @@ info "Installing Hostpad"
 SERVICE_FILE="/etc/systemd/system/hostapd.service"
 HOSTAPD_BIN=$(command -v hostapd || echo "/usr/local/bin/hostapd")
 
-    # Clone the official repo
-git clone git://w1.fi/hostap.git
-cd hostapd/hostapd
+    # Clone or update the official repo
+install -d -m 0755 /usr/local/src
+HOSTAPD_SRC_DIR=/usr/local/src/hostap
+if [ -d "$HOSTAPD_SRC_DIR" ]; then
+  info "Updating existing hostap source in $HOSTAPD_SRC_DIR."
+  git -C "$HOSTAPD_SRC_DIR" pull --ff-only
+else
+  info "Cloning hostap sources into $HOSTAPD_SRC_DIR."
+  git clone git://w1.fi/hostap.git "$HOSTAPD_SRC_DIR"
+fi
+
+pushd "$HOSTAPD_SRC_DIR/hostapd" >/dev/null
 cp defconfig .config
 
-    # Build & install 
-make -j4
-sudo make install
+    # Build & install
+HOSTAPD_BUILD_JOBS=1
+if command -v nproc >/dev/null 2>&1; then
+  HOSTAPD_BUILD_JOBS=$(nproc)
+fi
+make -j"$HOSTAPD_BUILD_JOBS"
+make install
+popd >/dev/null
 
-    # Create systemd service file
-echo "Hostapd binary gevonden op: $HOSTAPD_BIN"
+    # Refresh hostapd binary path and create systemd service file
+HOSTAPD_BIN=$(command -v hostapd || echo "/usr/local/bin/hostapd")
+info "Hostapd binary found at: $HOSTAPD_BIN"
 
-sudo bash -c "cat > $SERVICE_FILE" <<EOF
+cat >"$SERVICE_FILE" <<EOF
 [Unit]
 Description=Hostapd IEEE 802.11 Access Point
 After=network.target
@@ -422,12 +451,16 @@ Type=simple
 WantedBy=multi-user.target
 EOF
 
-echo "Service bestand aangemaakt: $SERVICE_FILE"
+info "Service file created: $SERVICE_FILE"
 
     # Manage hostapd
-sudo systemctl daemon-reload
-sudo systemctl enable hostapd
-sudo systemctl start hostapd
+if [ -n "$SYSTEMCTL" ]; then
+  $SYSTEMCTL daemon-reload
+  $SYSTEMCTL enable hostapd.service
+  $SYSTEMCTL restart hostapd.service
+else
+  warn "systemctl not available; enable hostapd manually."
+fi
 
 info "Hostpad installed"
 
@@ -547,7 +580,17 @@ info "Installing TAK server - Single server setup"
 # === Edit Raspberry OS: Increase JVM threads
 info "Changes in Raspberry OS: Increase JVM threads"
 
-echo -e "*      soft      nofile      32768\n*      hard      nofile      32768\n" | sudo tee --append /etc/security/limits.conf
+LIMITS_SOFT="*      soft      nofile      32768"
+LIMITS_HARD="*      hard      nofile      32768"
+if ! grep -Fxq "$LIMITS_SOFT" /etc/security/limits.conf || ! grep -Fxq "$LIMITS_HARD" /etc/security/limits.conf; then
+  cat <<'EOF' >>/etc/security/limits.conf
+*      soft      nofile      32768
+*      hard      nofile      32768
+EOF
+  info "JVM thread limits appended to /etc/security/limits.conf."
+else
+  info "JVM thread limits already configured."
+fi
 
 info "Changes in Raspberry OS are done"
 
@@ -618,7 +661,7 @@ else
 
   if [ ! -f "$pg_sources_file" ] || ! grep -Fxq "$pg_repo_line" "$pg_sources_file"; then
     info "Adding PostgreSQL APT repository ($pg_repo_line)."
-    echo "$pg_repo_line" | sudo tee "$pg_sources_file" >/dev/null
+    printf '%s\n' "$pg_repo_line" >>"$pg_sources_file"
   else
     info "PostgreSQL APT repository already configured."
   fi
@@ -626,13 +669,13 @@ else
   pg_keyring="/etc/apt/trusted.gpg.d/postgresql.org.gpg"
   if [ ! -s "$pg_keyring" ]; then
     info "Importing PostgreSQL signing key."
-    wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | sudo tee "$pg_keyring" >/dev/null
+    wget -qO- https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | tee "$pg_keyring" >/dev/null
   else
     info "PostgreSQL signing key already present."
   fi
 
-  sudo apt-get update -y
-  sudo apt-get install -y "${missing_packages[@]}"
+  apt-get update
+  apt-get install -y "${missing_packages[@]}"
 fi
 
 if command -v psql >/dev/null 2>&1; then
@@ -661,7 +704,7 @@ sleep 10
 # === Install TAK server
 info "Installing TAK Server"
 
-sudo apt install ./takserver_5.0-RELEASE29_all.deb -y
+apt-get install -y ./takserver_5.0-RELEASE29_all.deb
 
 info "TAK server is installed"
 
@@ -672,7 +715,7 @@ info "Installing and setting up firewall"
 # ===  Install UFW
 if ! command -v ufw &> /dev/null; then
     info "UFW is not installed. Installing..."
-    sudo apt update && sudo apt install -y ufw
+    apt-get install -y ufw
 else
     info "UFW is already installed."
 fi
