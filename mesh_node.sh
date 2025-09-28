@@ -8,6 +8,8 @@
 
     # ==============================================================================
 
+
+
 # === Config =======================================================================
 
 # === Exit on errors, unset vars, or failed pipes; show an error with line number if any command fails
@@ -55,28 +57,30 @@ error() {
   fi
 }
 
-  # Define a function to check if a command exists; store path to systemctl if found, else empty
+  # === Define a function to check if a command exists; store path to systemctl if found, else empty
 command_exists() { command -v "$1" >/dev/null ; }
 SYSTEMCTL=$(command -v systemctl || true)
 
-# === OS validation =============================================================
+  # === OS validation
 require_raspberry_pi_os() {
   if [ ! -r /etc/os-release ]; then
-    error "Unable to detect operating system (missing /etc/os-release)."
-    exit 1
+    echo "Unable to detect operating system (missing /etc/os-release)."
+    exit 1  
   fi
 
-  # shellcheck disable=SC1091
   . /etc/os-release
   RPI_OS_PRETTY_NAME=${PRETTY_NAME:-unknown}
 
   if [[ ${ID:-} != "raspbian" ]] && [[ ${NAME:-} != *"Raspberry Pi"* ]] && [[ ${PRETTY_NAME:-} != *"Raspberry Pi"* ]]; then
-    error "Unsupported operating system: ${RPI_OS_PRETTY_NAME}. This installer only supports Raspberry Pi OS."
+    echo "Unsupported operating system: ${RPI_OS_PRETTY_NAME}. This installer only supports Raspberry Pi OS."
     exit 1
   fi
 }
 
-# === Root only =================================================================
+echo "Raspberry OS has been detected (/etc/os-release)."
+
+
+# === Root only
 if [[ $EUID -ne 0 ]]; then
   error "This installer must be run as root."
   exit 1
@@ -87,7 +91,7 @@ require_raspberry_pi_os
 info "Running as root (user $(id -un))."
 
 
-# === Logging ===================================================================
+# === Logging
   # Creating the log file
 echo "Creating log file."
 
@@ -96,7 +100,7 @@ exec 3>&1
 exec >>"$LOGFILE" 2>&1
 
 
-  #First logs added
+  # First logs added
 info ""
 info "================================================="
 info "===                                           ==="
@@ -107,7 +111,7 @@ info ""
 info ""
 
   # Add system info
-info "Summary: OS=${RPI_OS_PRETTY_NAME:-$(. /etc/os-release; echo $PRETTY_NAME)}, Kernel=$(uname -r), batctl=$(batctl -v | head -n1 || echo n/a)"
+info "Summary: OS=${RPI_OS_PRETTY_NAME:-$(. /etc/os-release; echo $PRETTY_NAME)}, Kernel=$(uname -r))"
 
   #add some info that before did not got logged,
 info "Log file is created."
@@ -118,7 +122,8 @@ info "Detected operating system: ${RPI_OS_PRETTY_NAME:-unknown}."
   # Add we are root
 info "Confirmed running as root."
 
-# === Housekeeping ==============================================================
+
+# === Housekeeping
 info "Housekeeping starting."
 
   # Perform a small cleanup in the user’s home directory
@@ -130,7 +135,7 @@ HOME_DIR=${TARGET_HOME:-/root}
 info "Housekeeping is complete."
 
 
-# === System update =============================================================
+# === System update
 info "Upgrade and Update of the operatingsystem starting."
 
 apt-get update -y
@@ -144,7 +149,7 @@ sleep 10
 
 
 # === Prerequisites - install needed packages ===================================
-    # Pakages list
+  # === Pakages list
 PACKAGES=(
   nano
   python3
@@ -166,13 +171,13 @@ PACKAGES=(
 
 info "Package install starting."
 
-  # Automate install (faster)
+  # === Automate install (faster)
 if apt-get install -y --no-install-recommends "${PACKAGES[@]}"; then
   info "Bulk install/upgrade succeeded."
 else
   info "Bulk install failed; falling back to per-package handling."
 
-  # Fallback: per-packages processing
+  # === Fallback: per-packages processing
 for pkg in "${PACKAGES[@]}"; do
     info "Processing: $pkg ===="
     if ! apt-cache policy "$pkg" | grep -q "Candidate:"; then
@@ -196,10 +201,21 @@ info "Installation of all packages is complete."
 sleep 10
 
 
+# === Create PIP_INSTALL for Reticulum and Flask =============================================
+info "Create PIP_INSTALL variable"
+
+PIP_INSTALL=(python3 -m pip install --upgrade)
+if python3 -m pip install --help 2>&1 | grep -q -- '--break-system-packages'; then
+  PIP_INSTALL+=(--break-system-packages)
+fi
+
+info "PIP_INSTALL variable created and ready to use"
+
+
 #=== Install B.A.T.M.A.N.-adv ===================================================
 info "Installing B.A.T.M.A.N.-Adv."
 
-# 1) Fast detection: is the module available without the need of installing it?
+  # === Fast detection: is the module available without the need of installing it?
 if modprobe -n batman-adv 2>/dev/null; then
   log "B.A.T.M.A.N.-Adv kernelmodule is available (dry-run ok) — skip installation proces."
 else
@@ -213,7 +229,7 @@ else
   dpkg-reconfigure -fnoninteractive batman-adv-dkms || true
 fi
 
-# 2) Load the B.A.T.M.A.N.-Adv module
+# === Load the B.A.T.M.A.N.-Adv module
 if ! modprobe batman-adv 2>/dev/null; then
   if [ -d "/sys/module/batman_adv" ]; then
     log "B.A.T.M.A.N.-Adv is build in as module; modprobe not nessesary."
@@ -225,7 +241,7 @@ if ! modprobe batman-adv 2>/dev/null; then
   fi
 fi
 
-# 3) Setting up loading at start
+# === Setting up loading at start
 printf "%s\n" "batman-adv" > /etc/modules-load.d/batman-adv.conf
 
 info "Installation of B.A.T.M.A.N.-Adv complete."
@@ -233,64 +249,71 @@ info "Installation of B.A.T.M.A.N.-Adv complete."
 sleep 10
 
 
-#=== Install Batctl =============================================================
-info "Installing Batctl (latest release)."
+# === Install Batctl =============================================================
+info "Installing Batctl."
 
-install -d -m 0755 /usr/local/src
-BATCTL_SRC_DIR=/usr/local/src/batctl
+# === First attempt, load the module.
+  if apt-cache policy batctl 2>/dev/null | grep -q "Candidate:"; then
+    apt-get install -y --no-install-recommends batctl
+  else
+    log "Batctl nnot found in APT ; fall back to source code build."
 
-if [ -d "$BATCTL_SRC_DIR/.git" ]; then
-  info "Updating existing batctl sources in $BATCTL_SRC_DIR."
-  git -C "$BATCTL_SRC_DIR" fetch --tags --prune origin
-else
-  info "Cloning batctl sources into $BATCTL_SRC_DIR."
-  git clone https://git.open-mesh.org/batctl.git "$BATCTL_SRC_DIR"
-fi
+    install -d -m 0755 /usr/local/src
+    cd /usr/local/src
 
-pushd "$BATCTL_SRC_DIR" >/dev/null
+# === If you want to install a specific version: export BATCTL_VERSION=2025.0 (of wat je wilt)
+    if [ -n "${BATCTL_VERSION:-}" ]; then
+      log "Build batctl verion: ${BATCTL_VERSION}"
 
-LATEST_TAG_COMMIT=$(git rev-list --tags --max-count=1 2>/dev/null || true)
-if [ -n "$LATEST_TAG_COMMIT" ]; then
-  LATEST_TAG=$(git describe --tags "$LATEST_TAG_COMMIT" 2>/dev/null || true)
-else
-  LATEST_TAG=""
-fi
+  # First try the release-tarball. Fallback to git.
+      if command -v curl >/dev/null 2>&1; then
+        TAR="batctl-${BATCTL_VERSION}.tar.gz"
+        URL="https://downloads.open-mesh.org/batman/releases/${TAR}"
+        if curl -fsSLO "$URL"; then
+          tar xf "$TAR"
+          cd "batctl-${BATCTL_VERSION}"
+          make && make install
+        else
+          log "Release-tarball nor found, fall back to git tag."
+          if [ -d batctl ]; then
+            cd batctl && git fetch --tags && git checkout "v${BATCTL_VERSION}" && git pull --ff-only
+          else
+            git clone https://git.open-mesh.org/batctl.git
+            cd batctl && git fetch --tags && git checkout "v${BATCTL_VERSION}"
+          fi
+          make && make install
+        fi
+      else
 
-if [ -n "$LATEST_TAG" ]; then
-  info "Checking out latest batctl release: $LATEST_TAG."
-  git checkout --force "$LATEST_TAG"
-else
-  warn "Unable to determine latest batctl release tag; building from default branch."
-  git checkout --force master >/dev/null 2>&1 || \
-    git checkout --force main >/dev/null 2>&1 || true
-  CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-  if [ -n "$CURRENT_BRANCH" ] && [ "$CURRENT_BRANCH" != "HEAD" ]; then
-    git pull --ff-only origin "$CURRENT_BRANCH" >/dev/null 2>&1 || true
+  # No curl? Continu over git tag.
+        if [ -d batctl ]; then
+          cd batctl && git fetch --tags && git checkout "v${BATCTL_VERSION}" && git pull --ff-only
+        else
+          git clone https://git.open-mesh.org/batctl.git
+          cd batctl && git fetch --tags && git checkout "v${BATCTL_VERSION}"
+        fi
+        make && make install
+      fi
+    else
+
+# === Build HEAD (fastest fallback)
+      if [[ -d batctl ]]; then
+        cd batctl
+        git pull --ff-only
+      else
+        git clone https://git.open-mesh.org/batctl.git
+        cd batctl
+      fi
+      make && make install
+    fi
   fi
-fi
 
-info "Building batctl."
-make clean >/dev/null 2>&1 || true
-if ! make; then
-  popd >/dev/null
-  error "Failed to build batctl from source."
-  exit 1
-fi
-
-if ! make install; then
-  popd >/dev/null
-  error "Failed to install batctl after build."
-  exit 1
-fi
-
-popd >/dev/null
-
-# Verify installation
-if ! batctl -v >/dev/null 2>&1; then
-  error "Batctl not available after install."
-  exit 1
-fi
-log "Batctl Installed: $(batctl -v | head -n1)."
+# === Verify installation
+  if ! batctl -v >/dev/null 2>&1; then
+    error "Batctl not available after install."
+    exit 1
+  fi
+  log "Batctl Installed: $(batctl -v | head -n1)."
 
 info "Installation of Batctl complete."
 
@@ -310,15 +333,11 @@ fi
 
 sleep 10
 
+
 # === Install Reticulum =========================================================
 info "Installing Reticulum (RNS)."
 
-# Install Reticulum into system Python
-PIP_INSTALL=(python3 -m pip install --upgrade)
-if python3 -m pip install --help 2>&1 | grep -q -- '--break-system-packages'; then
-  PIP_INSTALL+=(--break-system-packages)
-fi
-
+# === Install RNS
 if "${PIP_INSTALL[@]}" rns; then
   log "Reticulum installed successfully: $(python3 -m pip show rns 2>/dev/null | grep Version || echo 'unknown version')"
 else
@@ -326,13 +345,14 @@ else
   exit 1
 fi
 
+# === Check if RNS is installed
 RNSD_PATH=$(command -v rnsd || true)
 if [ -z "$RNSD_PATH" ]; then
   error "Unable to locate rnsd in PATH after installation."
   exit 1
 fi
 
-# Create Reticulum systemd service
+# === Create Reticulum systemd service
 info "Creating Reticulum systemd service."
 
 cat >/etc/systemd/system/rnsd.service <<EOF
@@ -354,7 +374,7 @@ SyslogIdentifier=rnsd
 WantedBy=multi-user.target
 EOF
 
-# Enable and start service
+# === Enable and start service
 if [ -n "$SYSTEMCTL" ]; then
   $SYSTEMCTL daemon-reload
   $SYSTEMCTL enable rnsd.service
@@ -393,11 +413,11 @@ sleep 10
 # === Install Hostapd (last version) =============================================
 info "Installing Hostpad"
 
-    # Settings
+# === Settings
 SERVICE_FILE="/etc/systemd/system/hostapd.service"
 HOSTAPD_BIN=$(command -v hostapd || echo "/usr/local/bin/hostapd")
 
-    # Clone or update the official repo
+# === Clone or update the official repo
 install -d -m 0755 /usr/local/src
 HOSTAPD_SRC_DIR=/usr/local/src/hostap
 if [ -d "$HOSTAPD_SRC_DIR" ]; then
@@ -411,7 +431,7 @@ fi
 pushd "$HOSTAPD_SRC_DIR/hostapd" >/dev/null
 cp defconfig .config
 
-    # Build & install
+# === Build & install
 HOSTAPD_BUILD_JOBS=1
 if command -v nproc >/dev/null 2>&1; then
   HOSTAPD_BUILD_JOBS=$(nproc)
@@ -420,7 +440,7 @@ make -j"$HOSTAPD_BUILD_JOBS"
 make install
 popd >/dev/null
 
-    # Refresh hostapd binary path and create systemd service file
+# === Refresh hostapd binary path and create systemd service file
 HOSTAPD_BIN=$(command -v hostapd || echo "/usr/local/bin/hostapd")
 info "Hostapd binary found at: $HOSTAPD_BIN"
 
@@ -441,7 +461,7 @@ EOF
 
 info "Service file created: $SERVICE_FILE"
 
-    # Manage hostapd
+# === Manage hostapd
 if [ -n "$SYSTEMCTL" ]; then
   $SYSTEMCTL daemon-reload
   $SYSTEMCTL enable hostapd.service
@@ -452,14 +472,11 @@ fi
 
 info "Hostpad installed"
 
+sleep 10
 
-#=== Install Flask system-wide for systemd services=============================
+
+#=== Install Flask ===============================================================
 info "Installing Flask"
-
-PIP_CMD=(python3 -m pip install --upgrade)
-if python3 -m pip install --help 2>&1 | grep -q -- '--break-system-packages'; then
-  PIP_CMD+=(--break-system-packages)
-fi
 
 if python3 -m pip show flask >/dev/null 2>&1; then
   FLASK_OLD_VERSION=$(python3 -m pip show flask 2>/dev/null | awk '/Version:/ {print $2}')
@@ -468,7 +485,7 @@ else
   info "Flask not detected; installing now."
 fi
 
-if "${PIP_CMD[@]}" flask; then
+if "${PIP_INSTALL[@]}" flask; then
   FLASK_NEW_VERSION=$(python3 -m pip show flask 2>/dev/null | awk '/Version:/ {print $2}')
   log "Flask installed successfully: version ${FLASK_NEW_VERSION:-unknown}."
 else
@@ -685,8 +702,6 @@ else
 fi
 
 info "PostgreSQL installation step complete."
-
-sleep 10
 
 
 # === Install TAK server
