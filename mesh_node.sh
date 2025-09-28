@@ -79,8 +79,6 @@ require_raspberry_pi_os() {
 # ===Set Batctl version if you want a spcecific version. If needed uncomment.
 #BATCTL_VERSION=
 
-# === version if you want a spcecific version. If Bridge-Utils is not needen comment out by adding # in fornt of the line
-WANT_BRCTL=1
 
 # === Root only =================================================================
 if [[ $EUID -ne 0 ]]; then
@@ -308,16 +306,14 @@ sleep 10
 
 
 #=== Bridge-Utils ================================================================
-if [ "$WANT_BRCTL" = "1" ]; then
-  info "Installing Bridge-Utils (legacy Brctl."
+info "Installing Bridge-Utils (legacy Brctl."
 
-  if apt-cache policy bridge-utils | grep -q "Candidate:"; then
-    apt-get install -y --no-install-recommends bridge-utils \
-      && info "Installation of Bridge-Utils complete."\
-      || error "Installation failed for bridge-utils (continuing)."
-  else
-    error "Warning: bridge-utils not found in APT (skipping)."
-  fi
+if apt-cache policy bridge-utils | grep -q "Candidate:"; then
+  apt-get install -y --no-install-recommends bridge-utils \
+    && info "Installation of Bridge-Utils complete."\
+    || error "Installation failed for bridge-utils (continuing)."
+else
+  error "Warning: bridge-utils not found in APT (skipping)."
 fi
 
 sleep 10
