@@ -191,25 +191,14 @@ sleep 10
 #=== Install B.A.T.M.A.N.-adv ===================================================
 info "Installing B.A.T.M.A.N.-Adv."
 
-# Define current OS
-. /etc/os-release 2>/dev/null || true
-OS_ID="${ID:-unknown}"
-
 # 1) Fast detection: is the module available without the need of installing it?
 if modprobe -n batman-adv 2>/dev/null; then
   log "B.A.T.M.A.N.-Adv kernelmodule is available (dry-run ok) — skip installation proces."
 else
   log "B.A.T.M.A.N.-Adv module not available; attempt to create and install the B.A.T.M.A.N.-Adv module."
 
-  if echo "$OS_ID" | grep -qi 'ubuntu'; then
-    # Ubuntu on Raspberry Pi: Install extra modules specific to the current setup.'
-    apt-get install -y "linux-modules-extra-$(uname -r)" || true
-    # Headers  / DKMS
-    apt-get install -y "linux-headers-$(uname -r)" || true
-  else
-    # Raspberry Pi OS (Raspbian/Debian voor Pi)
-    apt-get install -y raspberrypi-kernel-headers || true
-  fi
+  # Raspberry Pi OS (Raspbian/Debian voor Pi)
+  apt-get install -y raspberrypi-kernel-headers || true
 
   # If there are still problems, fallback to DKMS-build of B.A.T.M.A.N.-Adv
   apt-get install -y batman-adv-dkms || true
