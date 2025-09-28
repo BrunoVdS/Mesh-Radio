@@ -1,23 +1,20 @@
-#!/bin/bash
+!/bin/bash
 
+    # ==============================================================================
 
-# ==============================================================================
+    ###                       NEW NODE INSTALL SCRIPT                            ###
 
-###                       FRESH NODE SETUP SCRIPT                            ###
+    ###          Version 1.0                                                     ###
 
-###          Version 1.0
+    # ==============================================================================
 
-# ==============================================================================
+# === Config =======================================================================
 
-
-  # Exit on errors, unset vars, or failed pipes; show an error with line number if any command fails
+# === Exit on errors, unset vars, or failed pipes; show an error with line number if any command fails
 set -Eeuo pipefail
 trap 'error "Unexpected error on line $LINENO"; exit 1' ERR
 
-
-# === Config ===================================================================
-
-  # Forcing apt/dpkg to run without prompting for user input, letting the script perform package operations unattended.
+# === Forcing apt/dpkg to run without prompting for user input, letting the script perform package operations unattended
 DEBIAN_FRONTEND=noninteractive
 export DEBIAN_FRONTEND
 
@@ -62,24 +59,28 @@ error() {
 command_exists() { command -v "$1" >/dev/null ; }
 SYSTEMCTL=$(command -v systemctl || true)
 
-#Set Batctl version if you want a spcecific version. If needed uncomment.
+# ===Set Batctl version if you want a spcecific version. If needed uncomment.
 #BATCTL_VERSION=
 
-# version if you want a spcecific version. If Bridge-Utils is not needen comment out by adding # in fornt of the line.
+# === version if you want a spcecific version. If Bridge-Utils is not needen comment out by adding # in fornt of the line
 WANT_BRCTL=1
 
-#=== Root only =================================================================
+# === Root only =================================================================
 echo "Check for ROOT."
 
 if [[ $EUID -ne 0 ]]; then
+  echo "Please make sure you are running the script while being root - Cancelling the script."
+  sleep 10
+  exit 1
   echo "This script needs elevated privileges; re-running with sudo."
   exec sudo --preserve-env=DEBIAN_FRONTEND "$0" "$@"
 fi
 
-echo "Root check complete (running as $(id -un))."
+echo "Root check complete, (running as $(id -un))."
 
 
-#=== Logging ===================================================================
+# === Logging ===================================================================
+  # Creating the log file
 echo "Creating log file."
 
 install -m 0640 -o root -g adm /dev/null "$LOGFILE"
@@ -87,9 +88,7 @@ exec 3>&1
 exec >>"$LOGFILE" 2>&1
 
 
-info "Log file is created."
-
-info ""
+  #First logs added
 info ""
 info "================================================="
 info "===                                           ==="
@@ -99,14 +98,20 @@ info "================================================="
 info ""
 info ""
 
-
+  # Add system info
 info "Summary: OS=$(. /etc/os-release; echo $PRETTY_NAME), Kernel=$(uname -r), batctl=$(batctl -v | head -n1 || echo n/a)"
 
+  #add some info that before did not got logged,
+info "Log file is created."
+info "location: /var/log/mesh-install.log"
+
+  # Add we are root
 info "Run as root (sudo)."
 
-#=== Housekeeping ==============================================================
+# === Housekeeping ==============================================================
 info "Housekeeping starting."
 
+  # Perform a small cleanup in the user’s home directory
 TARGET_USER=${SUDO_USER:-$USER}
 TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
 HOME_DIR=${TARGET_HOME:-/root}
@@ -115,7 +120,7 @@ HOME_DIR=${TARGET_HOME:-/root}
 info "Housekeeping is complete."
 
 
-#=== System update =============================================================
+# === System update =============================================================
 info "Upgrade and Update of the operatingsystem starting."
 
 apt-get update -y
@@ -125,10 +130,10 @@ apt-get -o Dpkg::Options::="--force-confdef" \
 
 info "Update and Upgrade of the operatingsystem is complete."
 
+sleep 10
 
-#=== Base packages==============================================================
-  #=== Prerequisites - install needed packages
- 
+
+# === Prerequisites - install needed packages ===================================
     # Pakages list
 PACKAGES=(
   nano
@@ -178,6 +183,8 @@ fi
 
 info "Installation of all packages is complete."
 
+sleep 10
+
 
 #=== Install B.A.T.M.A.N.-adv ===================================================
 info "Installing B.A.T.M.A.N.-Adv."
@@ -223,6 +230,8 @@ fi
 printf "%s\n" "batman-adv" > /etc/modules-load.d/batman-adv.conf
 
 info "Installation of B.A.T.M.A.N.-Adv complete."
+
+sleep 10
 
 
 #=== Install Batctl =============================================================
@@ -290,6 +299,8 @@ info "Installing Batctl."
 
 info "Installation of Batctl complete."
 
+sleep 10
+
 
 #=== Bridge-Utils ================================================================
 if [ "$WANT_BRCTL" = "1" ]; then
@@ -304,6 +315,7 @@ if [ "$WANT_BRCTL" = "1" ]; then
   fi
 fi
 
+sleep 10
 
 # === Install Reticulum =========================================================
 info "Installing Reticulum (RNS)."
@@ -388,6 +400,140 @@ fi
 
 info "Reticulum (RNS) is installed."
 
+sleep 10
+
+
+# === Install Hostapd (last version) =============================================
+info "Installing Hostpad"
+
+    # Settings
+SERVICE_FILE="/etc/systemd/system/hostapd.service"
+HOSTAPD_BIN=$(command -v hostapd || echo "/usr/local/bin/hostapd")
+
+    # Clone the official repo
+git clone git://w1.fi/hostap.git
+cd hostapd/hostapd
+cp defconfig .config
+
+    # Build & install 
+make -j4
+sudo make install
+
+    # Create systemd service file
+echo "Hostapd binary gevonden op: $HOSTAPD_BIN"
+
+sudo bash -c "cat > $SERVICE_FILE" <<EOF
+[Unit]
+Description=Hostapd IEEE 802.11 Access Point
+After=network.target
+
+[Service]
+ExecStart=$HOSTAPD_BIN -P /run/hostapd.pid /etc/hostapd/hostapd.conf
+ExecReload=/bin/kill -HUP \$MAINPID
+Restart=always
+Type=simple
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo "Service bestand aangemaakt: $SERVICE_FILE"
+
+    # Manage hostapd
+sudo systemctl daemon-reload
+sudo systemctl enable hostapd
+sudo systemctl start hostapd
+
+info "Hostpad installed"
+
+
+#=== Install Flask system-wide for systemd services=============================
+info "Installing Flask"
+
+sudo pip3 install --break-system-packages flask
+
+
+info "Flask is installed"
+
+sleep 10
+
+
+# === Install TAK Server =========================================================
+info "Installing TAK server - Single server setup"
+
+# === Edit Raspberry OS: Increase JVM threads
+info "Changes in Raspberry OS: Increase JVM threads"
+
+echo -e "*      soft      nofile      32768\n*      hard      nofile      32768\n" | sudo tee --append /etc/security/limits.conf
+
+info "Changes in Raspberry OS are done"
+
+
+# === Install Java 17
+info "Installing JavaScript 17"
+
+  # Check current Java version
+if command -v java >/dev/null 2>&1; then
+    current_version=$(java -version 2>&1 | awk -F[\".] '/version/ {print $2}')
+    info "Current Java version detected: $current_version"
+else
+    error "Java not installed."
+    current_version=0
+fi
+
+  # Install Java 17 if not present
+if [ "$current_version" -ne 17 ]; then
+    log "Installing OpenJDK 17..."
+    sudo apt update
+    sudo apt install -y openjdk-17-jre
+else
+    info "Java 17 is installed."
+fi
+
+
+# === Install PostgreSQL 15 and PostGIS
+info "Installing PostgreSQL 15 and PostGIS"
+
+sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+wget -O- https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/postgresql.org.gpg > /dev/null
+
+  # Update repository database
+sudo apt-get update -y
+
+info "PostgreSQL 15 and and PostGIS are installed."
+
+sleep 10
+
+
+# === Install TAK server
+info "Installing TAK Server"
+
+sudo apt install ./takserver_5.0-RELEASE29_all.deb -y
+
+info "TAK server is installed"
+
+
+# === firewall install and setting up rules
+info "Installing and setting up firewall"
+
+# ===  Install UFW
+if ! command -v ufw &> /dev/null; then
+    info "UFW is not installed. Installing..."
+    sudo apt update && sudo apt install -y ufw
+else
+    info "UFW is already installed."
+fi
+
+# === Setting up UFW for TAK server
+
+
+
+info "Firewall is installed and set up for TAK server"
+
+info "TAK server is fully installed,"
+info "for configuration follow the guide at https://mytecknet.com/lets-build-a-tak-server/."
+
+sleep 10
 
 #=== Install MediaMTX ============================================================
 info "Installing MediaMTX."
@@ -472,6 +618,8 @@ else
 fi
 
 info "MediaMTX installation and service setup complete."
+
+sleep 10
 
 
 #=== Logrotate config ============================================================
