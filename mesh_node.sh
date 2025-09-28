@@ -1,4 +1,4 @@
-!/bin/bash
+#!/bin/bash
 
     # ==============================================================================
 
@@ -69,11 +69,13 @@ WANT_BRCTL=1
 echo "Check for ROOT."
 
 if [[ $EUID -ne 0 ]]; then
-  echo "Please make sure you are running the script while being root - Cancelling the script."
-  sleep 10
-  exit 1
-  echo "This script needs elevated privileges; re-running with sudo."
-  exec sudo --preserve-env=DEBIAN_FRONTEND "$0" "$@"
+  echo "This script needs elevated privileges; attempting to re-run with sudo."
+  if command -v sudo >/dev/null 2>&1; then
+    exec sudo --preserve-env=DEBIAN_FRONTEND,BATCTL_VERSION,LOGFILE bash "$0" "$@"
+  else
+    echo "sudo is not available. Please run this script as root." >&2
+    exit 1
+  fi
 fi
 
 echo "Root check complete, (running as $(id -un))."
