@@ -750,12 +750,9 @@ case "$ARCH" in
   arm64)
     MEDIAMTX_ARCHIVE=mediamtx_linux_arm64v8.tar.gz
     ;;
-  amd64)
-    MEDIAMTX_ARCHIVE=mediamtx_linux_amd64.tar.gz
-    ;;
   *)
-    warn "Unsupported architecture '$ARCH'; defaulting to amd64 build."
-    MEDIAMTX_ARCHIVE=mediamtx_linux_amd64.tar.gz
+    error "Unsupported architecture '$ARCH'. MediaMTX installation requires Raspberry Pi OS on armhf or arm64. Please rerun this installer on Raspberry Pi OS running on Raspberry Pi hardware."
+    exit 1
     ;;
 esac
 
