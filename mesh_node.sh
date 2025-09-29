@@ -1,4 +1,4 @@
-#!/bin/bash
+ #!/bin/bash
 
     # ==============================================================================
 
@@ -20,7 +20,7 @@ trap 'error "Unexpected error on line $LINENO"; exit 1' ERR
 DEBIAN_FRONTEND=noninteractive
 export DEBIAN_FRONTEND
 
-# === LOGFILE - mesh-install.log
+# === LOGFILE - variables
   # Log file location
 LOGFILE="/var/log/mesh-install.log"
 
@@ -196,6 +196,9 @@ for pkg in "${PACKAGES[@]}"; do
   done
 fi
 
+# === Update the system withe the install of all new packages
+apt-get update -y
+
 info "Installation of all packages is complete."
 
 sleep 10
@@ -243,6 +246,9 @@ fi
 
 # === Setting up loading at start
 printf "%s\n" "batman-adv" > /etc/modules-load.d/batman-adv.conf
+
+# === Update the system withe the install of all new packages
+apt-get update -y
 
 info "Installation of B.A.T.M.A.N.-Adv complete."
 
@@ -315,6 +321,9 @@ info "Installing Batctl."
   fi
   log "Batctl Installed: $(batctl -v | head -n1)."
 
+# === Update the system withe the install of all new packages
+apt-get update -y
+
 info "Installation of Batctl complete."
 
 sleep 10
@@ -330,6 +339,9 @@ if apt-cache policy bridge-utils | grep -q "Candidate:"; then
 else
   error "Warning: bridge-utils not found in APT (skipping)."
 fi
+
+# === Update the system withe the install of all new packages
+apt-get update -y
 
 sleep 10
 
@@ -405,6 +417,9 @@ if [ -n "$SYSTEMCTL" ]; then
   $SYSTEMCTL --no-pager --full status rnsd || true
 fi
 
+# === Update the system withe the install of all new packages
+apt-get update -y
+
 info "Reticulum (RNS) is installed."
 
 sleep 10
@@ -469,6 +484,9 @@ if [ -n "$SYSTEMCTL" ]; then
 else
   warn "systemctl not available; enable hostapd manually."
 fi
+
+# === Update the system withe the install of all new packages
+apt-get update -y
 
 info "Hostpad installed"
 
@@ -574,6 +592,9 @@ else
   warn "systemctl not available; enable mesh-flask.service manually."
 fi
 
+# === Update the system withe the install of all new packages
+apt-get update -y
+
 info "Flask installation and service configuration complete."
 
 sleep 10
@@ -600,7 +621,7 @@ fi
 info "Changes in Raspberry OS are done"
 
 
-# === Install Java 17
+# === Install Java 17 openjdk
 info "Verifying OpenJDK 17 installation"
 
 REQUIRED_JAVA_MAJOR=17
@@ -623,6 +644,11 @@ if [ "$java_major_version" -ne "$REQUIRED_JAVA_MAJOR" ] || ! dpkg -s "$JAVA_PACK
 else
   info "OpenJDK 17 is already installed."
 fi
+
+# === Update the system withe the install of all new packages
+apt-get update -y
+
+info "Java 17 OpenJDK step is complete"
 
 
 # === Install PostgreSQL 15 and PostGIS
@@ -701,6 +727,9 @@ else
   warn "PostGIS extension package is not installed."
 fi
 
+# === Update the system withe the install of all new packages
+apt-get update -y
+
 info "PostgreSQL installation step complete."
 
 
@@ -710,29 +739,13 @@ info "Installing TAK Server"
 apt-get install -y ./takserver_5.0-RELEASE29_all.deb
 
 info "TAK server is installed"
+info "For configuration follow the guide at https://mytecknet.com/lets-build-a-tak-server/."
 
-
-# === firewall install and setting up rules
-info "Installing and setting up firewall"
-
-# ===  Install UFW
-if ! command -v ufw &> /dev/null; then
-    info "UFW is not installed. Installing..."
-    apt-get install -y ufw
-else
-    info "UFW is already installed."
-fi
-
-# === Setting up UFW for TAK server
-
-
-
-info "Firewall is installed and set up for TAK server"
-
-info "TAK server is fully installed,"
-info "for configuration follow the guide at https://mytecknet.com/lets-build-a-tak-server/."
+# === Update the system withe the install of all new packages
+apt-get update -y
 
 sleep 10
+
 
 #=== Install MediaMTX ============================================================
 info "Installing MediaMTX."
@@ -813,12 +826,53 @@ else
   warn "systemctl not available; please enable mediamtx manually."
 fi
 
+# === Update the system withe the install of all new packages
+apt-get update -y
+
 info "MediaMTX installation and service setup complete."
 
 sleep 10
 
 
-#=== Logrotate config ============================================================
+# === UFW firewall install ================================================================
+info "Installing and setting up UFW (all connections open for now)"
+
+# === Ensure latest package lists and install/upgrade UFW
+apt-get update -y
+apt-get install -y --no-install-recommends ufw
+apt-get install -y --only-upgrade ufw || true  # if already latest, this no-ops
+
+info "UFW version: $(ufw --version | head -n1 || echo 'unknown')"
+
+# === Optional: enable IPv6 (so rules apply to v6 too when we harden later)
+if grep -q '^IPV6=no' /etc/default/ufw 2>/dev/null; then
+  sed -i 's/^IPV6=no/IPV6=yes/' /etc/default/ufw
+  info "Enabled IPv6 in /etc/default/ufw"
+fi
+
+# === Start from a clean state
+ufw --force reset
+
+# === Open everything (yes, really)
+ufw default allow incoming
+ufw default allow outgoing
+
+# === Keep logs quiet while it's wide open
+ufw logging off
+
+# === Enable UFW (with allow-all defaults, this is effectively no firewalling)
+ufw --force enable
+
+# === Update the system withe the install of all new packages
+apt-get update -y
+
+info "UFW is enabled with ALL traffic allowed (incoming & outgoing)."
+info "We'll lock this down later per-app to create a safe environment."
+
+sleep 10
+
+
+# === Logrotate config ============================================================
 info "Logrotate config."
 
 install -m 0644 -o root -g root /dev/null /etc/logrotate.d/mesh-install
@@ -837,7 +891,7 @@ EOF
 info "Logrotate config done."
 
 
-#=== Clean up after installation is complete ====================================
+# === Clean up after installation is complete ====================================
 info "Clean up before end of script."
 
 apt-get autoremove -y
@@ -845,14 +899,16 @@ apt-get clean
 
 info "Clean up finished."
 
+sleep 5
 
-#=== End of script ===============================================================
+# === Log status of all installed software ===============================================================
 info "Summary: OS=$(. /etc/os-release; echo $PRETTY_NAME), Kernel=$(uname -r), batctl=$(batctl -v | head -n1 || echo n/a)"
 
 info "Installation complete."
 
+sleep 5
 
-#=== Reboot prompt ==============================================================
+# === Reboot prompt ==============================================================
 info "Reboot or not"
 
 read -r -p "Do you want to reboot the system? [Y/n]: " REPLY || REPLY=""
