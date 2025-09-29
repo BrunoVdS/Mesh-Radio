@@ -12,7 +12,12 @@ necessary credentials while keeping root access limited to the
 installation process itself.
 
 Configuration script
-  To Do
+  The Flask web service configuration has been split out into a dedicated helper
+  script. After running `mesh_node.sh` (which now only ensures the Flask package
+  is installed), execute `scripts/configure_flask.sh` as root to deploy the
+  default application stub, environment file, and systemd service. The node
+  installer will call this script automatically when it is present, but you can
+  also re-run it later if you need to regenerate the configuration.
 
 Data server for client softwater
   To Do
