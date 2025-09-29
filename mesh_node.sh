@@ -1,4 +1,4 @@
- #!/bin/bash
+#!/bin/bash
 
     # ==============================================================================
 
@@ -425,7 +425,7 @@ info "Reticulum (RNS) is installed."
 sleep 10
 
 
-# === Install Hostapd (last version) =============================================
+# === Install Hostapd ============================================================
 info "Installing Hostpad"
 
 # === Settings
@@ -455,10 +455,11 @@ make -j"$HOSTAPD_BUILD_JOBS"
 make install
 popd >/dev/null
 
-# === Refresh hostapd binary path and create systemd service file
+# === Refresh Hostapd binary path
 HOSTAPD_BIN=$(command -v hostapd || echo "/usr/local/bin/hostapd")
 info "Hostapd binary found at: $HOSTAPD_BIN"
 
+# === Hostapd systemd service setup
 cat >"$SERVICE_FILE" <<EOF
 [Unit]
 Description=Hostapd IEEE 802.11 Access Point
@@ -511,17 +512,47 @@ else
   exit 1
 fi
 
-CONFIGURE_FLASK_SCRIPT="$(dirname "$0")/scripts/configure_flask.sh"
-if [ -x "$CONFIGURE_FLASK_SCRIPT" ]; then
-  info "Running Flask configuration script at $CONFIGURE_FLASK_SCRIPT."
-  if ! bash "$CONFIGURE_FLASK_SCRIPT"; then
-    warn "Flask configuration script reported an error. Review its output before continuing."
+# === Flast systemd service setup
+info "Configuring Flask systemd service."
+
+cat >"$FLASK_SERVICE_FILE" <<EOF
+[Unit]
+Description=Mesh Flask Application Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-$FLASK_ENV_FILE
+WorkingDirectory=$FLASK_APP_DIR
+ExecStart=/usr/bin/python3 -m flask run
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+$FLASK_USER_DIRECTIVE
+$FLASK_GROUP_DIRECTIVE
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# === Manage Flask
+if [ -n "$SYSTEMCTL" ]; then
+  $SYSTEMCTL daemon-reload
+  $SYSTEMCTL enable mesh-flask.service
+  if ! $SYSTEMCTL restart mesh-flask.service; then
+    warn "mesh-flask.service failed to start; check journalctl -u mesh-flask.service for details."
   fi
+  $SYSTEMCTL --no-pager --full status mesh-flask.service || true
 else
-  warn "Flask configuration script not found at $CONFIGURE_FLASK_SCRIPT. Run it manually to set up the service."
+  warn "systemctl not available; enable mesh-flask.service manually."
 fi
 
-info "Flask installation step complete."
+# === Update the system with the install of all new packages
+apt-get update -y
+
+info "Flask installation and service configuration complete."
 
 sleep 10
 
@@ -845,6 +876,5 @@ if [[ "$REPLY" =~ ^[Yy]$ ]]; then
 else
   info "we will exit the script now."
 fi
-
 
 exit
