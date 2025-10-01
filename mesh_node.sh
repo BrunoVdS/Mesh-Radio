@@ -459,11 +459,67 @@ popd >/dev/null
 HOSTAPD_BIN=$(command -v hostapd || echo "/usr/local/bin/hostapd")
 info "Hostapd binary found at: $HOSTAPD_BIN"
 
+# === Collect hostapd configuration from user
+HOSTAPD_CONFIG_DIR=/etc/hostapd
+HOSTAPD_CONFIG_FILE="$HOSTAPD_CONFIG_DIR/hostapd.conf"
+DEFAULT_SSID="takNode1"
+DEFAULT_CHANNEL="1"
+
+if [ -t 0 ]; then
+  printf "Enter SSID [%s]: " "$DEFAULT_SSID" >&3
+  read -r HOSTAPD_SSID <&0 || HOSTAPD_SSID=""
+  HOSTAPD_SSID=${HOSTAPD_SSID:-$DEFAULT_SSID}
+
+  while :; do
+    printf "Enter channel [%s]: " "$DEFAULT_CHANNEL" >&3
+    read -r HOSTAPD_CHANNEL <&0 || HOSTAPD_CHANNEL=""
+    HOSTAPD_CHANNEL=${HOSTAPD_CHANNEL:-$DEFAULT_CHANNEL}
+    if [[ "$HOSTAPD_CHANNEL" =~ ^[0-9]+$ ]]; then
+      break
+    fi
+    printf "Invalid channel. Please provide a numeric value.\n" >&3
+  done
+
+  while :; do
+    printf "Enter WPA2 passphrase (8-63 characters): " >&3
+    read -rs HOSTAPD_PASSPHRASE <&0 || HOSTAPD_PASSPHRASE=""
+    printf "\n" >&3
+    if (( ${#HOSTAPD_PASSPHRASE} >= 8 && ${#HOSTAPD_PASSPHRASE} <= 63 )); then
+      break
+    fi
+    printf "Passphrase must be between 8 and 63 characters.\n" >&3
+  done
+else
+  HOSTAPD_SSID=$DEFAULT_SSID
+  HOSTAPD_CHANNEL=$DEFAULT_CHANNEL
+  HOSTAPD_PASSPHRASE="52235223"
+  info "Non-interactive environment detected; using default hostapd settings."
+fi
+
+install -d -m 0755 "$HOSTAPD_CONFIG_DIR"
+cat >"$HOSTAPD_CONFIG_FILE" <<EOF
+interface=wlan0
+ssid=$HOSTAPD_SSID
+hw_mode=g
+channel=$HOSTAPD_CHANNEL
+auth_algs=1
+wmm_enabled=1
+wpa=2
+wpa_passphrase=$HOSTAPD_PASSPHRASE
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+EOF
+chmod 0640 "$HOSTAPD_CONFIG_FILE"
+chown root:root "$HOSTAPD_CONFIG_FILE"
+
+info "hostapd configuration written to $HOSTAPD_CONFIG_FILE (SSID: $HOSTAPD_SSID, channel: $HOSTAPD_CHANNEL)"
+
 # === Hostapd systemd service setup
 cat >"$SERVICE_FILE" <<EOF
 [Unit]
 Description=Hostapd IEEE 802.11 Access Point
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 ExecStart=$HOSTAPD_BIN -P /run/hostapd.pid /etc/hostapd/hostapd.conf
@@ -482,6 +538,17 @@ if [ -n "$SYSTEMCTL" ]; then
   $SYSTEMCTL daemon-reload
   $SYSTEMCTL enable hostapd.service
   $SYSTEMCTL restart hostapd.service
+  if $SYSTEMCTL is-active --quiet hostapd.service; then
+    info "hostapd service is active."
+  else
+    error "hostapd service failed to start. Check journalctl -u hostapd."
+    exit 1
+  fi
+  if $SYSTEMCTL is-enabled --quiet hostapd.service; then
+    info "hostapd service enabled to start on boot."
+  else
+    warn "hostapd service is not enabled to start on boot."
+  fi
 else
   warn "systemctl not available; enable hostapd manually."
 fi
