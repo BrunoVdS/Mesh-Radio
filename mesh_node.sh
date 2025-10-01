@@ -129,6 +129,10 @@ info "Housekeeping starting."
   # Perform a small cleanup in the user’s home directory
 TARGET_USER=${SUDO_USER:-$USER}
 TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
+TARGET_GROUP=$(id -gn "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")
+if [ -z "$TARGET_HOME" ]; then
+  TARGET_HOME=/root
+fi
 HOME_DIR=${TARGET_HOME:-/root}
 [ -n "$TARGET_HOME" ] && [ -d "$TARGET_HOME/linux" ] && rm -rf "$TARGET_HOME/linux" || true
 
@@ -332,6 +336,67 @@ sleep 10
 #=== NomadNet ===============================================================
 info "Installing NomadNet"
 
+# === Install NomadNet via pip (with fallback to source)
+if "${PIP_INSTALL[@]}" nomadnet; then
+  log "NomadNet installed successfully: $(python3 -m pip show nomadnet 2>/dev/null | grep Version || echo 'unknown version')"
+else
+  error "NomadNet installation failed."
+  exit 1
+fi
+
+# === Locate the NomadNet executable
+NOMADNET_BIN=$(command -v nomadnet || true)
+if [ -z "$NOMADNET_BIN" ]; then
+  error "Unable to locate nomadnet in PATH after installation."
+  exit 1
+fi
+
+# === Prepare runtime directories for the target user
+install -d -m 0755 -o "$TARGET_USER" -g "$TARGET_GROUP" "$TARGET_HOME/.local/share/nomadnet" || true
+install -d -m 0755 -o "$TARGET_USER" -g "$TARGET_GROUP" "$TARGET_HOME/.config/nomadnet" || true
+
+# === Create NomadNet systemd service so it starts on boot
+NOMADNET_SERVICE="/etc/systemd/system/nomadnet.service"
+info "Creating NomadNet systemd service at $NOMADNET_SERVICE."
+
+cat >"$NOMADNET_SERVICE" <<EOF
+[Unit]
+Description=NomadNet Service
+After=network-online.target rnsd.service
+Wants=network-online.target rnsd.service
+
+[Service]
+Type=simple
+User=$TARGET_USER
+Group=$TARGET_GROUP
+Environment=HOME=$TARGET_HOME
+WorkingDirectory=$TARGET_HOME
+ExecStart=$NOMADNET_BIN --serve
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# === Enable and start NomadNet service
+if [ -n "$SYSTEMCTL" ]; then
+  $SYSTEMCTL daemon-reload
+  $SYSTEMCTL enable nomadnet.service
+  $SYSTEMCTL restart nomadnet.service
+else
+  warn "systemctl not available; please enable nomadnet manually."
+fi
+
+info "NomadNet systemd service configured."
+
+if "$NOMADNET_BIN" --version >/dev/null 2>&1; then
+  info "NomadNet version: $($NOMADNET_BIN --version 2>/dev/null | head -n1)"
+else
+  warn "Unable to determine NomadNet version."
+fi
 
 
 # === Update the system withe the install of all new packages
