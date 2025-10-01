@@ -562,6 +562,21 @@ sleep 10
 
 
 #=== Install Flask ===============================================================
+
+FLASK_APP_DIR="/opt/mesh-flask"
+FLASK_APP_FILE="$FLASK_APP_DIR/app.py"
+FLASK_ENV_DIR="/etc/mesh"
+FLASK_ENV_FILE="$FLASK_ENV_DIR/flask.env"
+FLASK_SERVICE_FILE="/etc/systemd/system/mesh-flask.service"
+
+if [ -z "${TARGET_USER:-}" ] || [ "${TARGET_USER}" = "root" ]; then
+  FLASK_USER_DIRECTIVE="User=root"
+  FLASK_GROUP_DIRECTIVE="Group=root"
+else
+  FLASK_USER_DIRECTIVE="User=$TARGET_USER"
+  FLASK_GROUP_DIRECTIVE="Group=$TARGET_USER"
+fi
+
 info "Installing Flask"
 
 if python3 -m pip show flask >/dev/null 2>&1; then
