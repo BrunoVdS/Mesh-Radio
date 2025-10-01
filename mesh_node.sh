@@ -329,16 +329,10 @@ info "Installation of Batctl complete."
 sleep 10
 
 
-#=== Bridge-Utils ================================================================
-info "Installing Bridge-Utils (legacy Brctl."
+#=== NomadNet ===============================================================
+info "Installing NomadNet"
 
-if apt-cache policy bridge-utils | grep -q "Candidate:"; then
-  apt-get install -y --no-install-recommends bridge-utils \
-    && info "Installation of Bridge-Utils complete."\
-    || error "Installation failed for bridge-utils (continuing)."
-else
-  error "Warning: bridge-utils not found in APT (skipping)."
-fi
+
 
 # === Update the system withe the install of all new packages
 apt-get update -y
