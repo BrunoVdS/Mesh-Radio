@@ -1,429 +1,395 @@
-!/usr/bin/env bash
-
-# Pi 5 APK Hotspot Setup (v3): wlan0 AP + dnsmasq + nginx (static APK downloads only) + nftables
-# Optional: captive-portal-like behavior via DNS hijack; nodogsplash can be toggled but is OFF by default.
-# Usage: sudo ./mesh_server.sh   (or --refresh-index to rebuild the landing page)
+#!/usr/bin/env bash
+# Option B + One-time Captive Portal + Pretty URL for Raspberry Pi OS (Bookworm)
+# AP on wlan0, DHCP/DNS via dnsmasq, APK hosting via nginx,
+# first-HTTP redirect via nftables with whitelist release,
+# friendly URL via dnsmasq host mapping (e.g., apkspot.local)
 
 set -euo pipefail
 
-### === TWEAKABLES === ###
+############################
+# --- CONFIG VARIABLES --- #
+############################
+SSID="APK-Spot"
+WPA_PASSPHRASE="change-me-1234"
+
 WLAN_IF="wlan0"
-SSID="PiAPK"
-PASSPHRASE="SuperSecret123"    # 8..63 chars
-AP_IP="192.168.4.1"
-SUBNET_CIDR="/24"               # corresponds to 255.255.255.0
-DHCP_RANGE="192.168.4.10,192.168.4.200,255.255.255.0,12h"
-APK_DIR="/srv/apk"
-ENABLE_NODOGSPLASH="0"          # set to 1 if you want to install nodogsplash (best-effort)
-ALLOW_SSH_ANYWHERE="1"          # 1 keeps SSH reachable from any iface; set 0 to restrict to wlan0 only
+AP_IP="10.0.0.1"
+CIDR="/24"
 
-### === DERIVED === ###
-SUBNET_PREFIX="${AP_IP%.*}"
-SUBNET_CIDR_ONLY="${SUBNET_CIDR#/}"
+# DHCP pool
+DHCP_RANGE_START="10.0.0.50"
+DHCP_RANGE_END="10.0.0.150"
+DHCP_LEASE="12h"
 
-need_root() {
-  if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
-    echo "Please run as root: sudo $0" >&2
-    exit 1
-  fi
-}
+# Wi-Fi channel
+CHANNEL="6"
 
-backup_file() {
-  local f="$1"
-  if [[ -f "$f" && ! -f "$f.bak_pi_apk" ]]; then
-    cp -a "$f" "$f.bak_pi_apk"
-  fi
-}
+# Whitelist timeout
+WHITELIST_TIMEOUT="8h"
 
-write_file() {
-  local path="$1"; shift
-  backup_file "$path"
-  install -D -m 0644 /dev/null "$path"
-  cat >"$path" <<'EOF'
-PLACEHOLDER
+# APK directory
+APK_DIR="/srv/apks"
+
+# ******** Pretty URL ********
+PORTAL_HOST="apkspot.local"   # <-- verander dit als je wilt
+EXTRA_HOSTS=("www.apkspot.local")  # extra namen die ook naar de portal wijzen
+
+#################################
+# sanity checks & prerequisites #
+#################################
+if [[ $EUID -ne 0 ]]; then
+  echo "Run me as root. Ja, echt. sudo ./setup_apk_portal.sh"
+  exit 1
+fi
+
+command -v rfkill >/dev/null 2>&1 && rfkill unblock wifi || true
+
+echo "[1/12] Installing packages… (hostapd, dnsmasq, nginx, nftables, python3-flask, jq, imagemagick)"
+apt-get update -y
+apt-get install -y hostapd dnsmasq nginx nftables python3-flask jq imagemagick || apt-get install -y hostapd dnsmasq nginx nftables python3-flask jq
+
+#############################################
+# Make NetworkManager ignore wlan0 (if any) #
+#############################################
+echo "[2/12] Making NetworkManager ignore ${WLAN_IF} (if present)…"
+mkdir -p /etc/NetworkManager/conf.d
+cat >/etc/NetworkManager/conf.d/unmanaged-${WLAN_IF}.conf <<EOF
+[keyfile]
+unmanaged-devices=interface-name:${WLAN_IF}
 EOF
-}
+systemctl restart NetworkManager 2>/dev/null || true
 
-write_file_content() {
-  local path="$1"; shift
-  backup_file "$path"
-  cat >"$path" <<EOF
-$*
+#############################################
+# Static IP for wlan0 via dhcpcd (Bookworm) #
+#############################################
+echo "[3/12] Configuring static IP ${AP_IP}${CIDR} on ${WLAN_IF} via dhcpcd…"
+sed -i '/^# BEGIN APK-PORTAL/,/^# END APK-PORTAL/d' /etc/dhcpcd.conf || true
+cat >>/etc/dhcpcd.conf <<EOF
+# BEGIN APK-PORTAL
+interface ${WLAN_IF}
+static ip_address=${AP_IP}${CIDR}
+nohook wpa_supplicant
+# END APK-PORTAL
 EOF
-}
+systemctl restart dhcpcd
+ip addr flush dev "${WLAN_IF}" || true
+ip addr add "${AP_IP}${CIDR}" dev "${WLAN_IF}" || true
+ip link set "${WLAN_IF}" up || true
 
-append_once() {
-  local path="$1"; shift
-  local marker_start="$2"; shift
-  local marker_end="$3"; shift
-  local content="$*"
-  backup_file "$path"
-  # Remove previous block if present
-  if grep -q "$marker_start" "$path" 2>/dev/null; then
-    awk -v s="$marker_start" -v e="$marker_end" 'BEGIN{inblk=0} $0~s{inblk=1;next} $0~e{inblk=0;next} !inblk{print}' "$path" >"$path.tmp" && mv "$path.tmp" "$path"
-  fi
-  {
-    echo "$marker_start"
-    echo "$content"
-    echo "$marker_end"
-  } >>"$path"
-}
-
-install_packages() {
-  apt-get update
-  local pkgs=(hostapd dnsmasq nginx nftables qrencode)
-  if [[ "$ENABLE_NODOGSPLASH" == "1" ]]; then
-    pkgs+=(nodogsplash)
-  fi
-  DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkgs[@]}"
-}
-
-format_size() {
-  local bytes="$1"
-  if command -v numfmt >/dev/null 2>&1; then
-    numfmt --to=iec --suffix=B "$bytes" 2>/dev/null || echo "${bytes} B"
-  else
-    echo "${bytes} B"
-  fi
-}
-
-generate_checksums() {
-  (cd "$APK_DIR/android" && shopt -s nullglob && files=(*.apk *.aab); if (( ${#files[@]} )); then sha256sum "${files[@]}" > SHA256SUMS.txt; else rm -f SHA256SUMS.txt; fi) || true
-  (cd "$APK_DIR/ios" && shopt -s nullglob && files=(*.ipa); if (( ${#files[@]} )); then sha256sum "${files[@]}" > SHA256SUMS.txt; else rm -f SHA256SUMS.txt; fi) || true
-}
-
-generate_download_index() {
-  local index_path="${APK_DIR}/index.html"
-  local continue_path="${APK_DIR}/continue.html"
-  shopt -s nullglob
-  local -a android_files=("${APK_DIR}/android"/*.apk "${APK_DIR}/android"/*.aab)
-  local -a ios_files=("${APK_DIR}/ios"/*.ipa)
-  shopt -u nullglob
-
-  {
-    cat <<EOF
-<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${SSID} Downloads</title>
-<style>
-body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Ubuntu,Cantarell,"Helvetica Neue",Arial,sans-serif;max-width:840px;margin:2rem auto;padding:0 1.25rem;background:#f7f7f9;color:#212529}
-header{text-align:center;margin-bottom:2rem}
-.platform{background:#fff;border-radius:12px;padding:1.25rem;margin-bottom:1.5rem;box-shadow:0 6px 18px rgba(31,35,40,.08)}
-.platform h2{margin-top:0;font-size:1.4rem}
-.download-list{list-style:none;padding:0;margin:0}
-.download-list li{display:flex;justify-content:space-between;align-items:center;padding:.65rem .75rem;border-radius:8px;border:1px solid #e2e3e5;margin-bottom:.65rem;background:#fafafa}
-.download-list li a{color:#0d6efd;text-decoration:none;font-weight:600;word-break:break-word}
-.download-list li a:hover{text-decoration:underline}
-.filesize{font-size:.9rem;color:#6c757d;margin-left:1rem;white-space:nowrap}
-.empty{margin:0;color:#6c757d}
-.checksums{margin-top:1rem}
-.checksums a{color:#495057}
-.nodownload{text-align:center}
-.nodownload .button{display:inline-block;padding:.75rem 1.5rem;background:#0d6efd;color:#fff;border-radius:999px;text-decoration:none;font-weight:600;margin-top:.5rem}
-.nodownload .button:hover{background:#0b5ed7}
-footer{margin-top:2.5rem;font-size:.9rem;color:#6c757d;text-align:center}
-</style>
-</head><body>
-<header>
-  <h1>Welcome to ${SSID}</h1>
-  <p>Select the downloads for your device or skip if you do not need any files.</p>
-</header>
-<main>
-  <section id="android" class="platform">
-    <h2>Android builds</h2>
-    <p>Installable APK/AAB files for Android phones and tablets.</p>
-EOF
-
-    if (( ${#android_files[@]} )); then
-      echo "    <ul class=\"download-list\">"
-      local fname bytes human
-      for path in "${android_files[@]}"; do
-        [[ -f "$path" ]] || continue
-        fname="${path##*/}"
-        bytes=$(stat -c %s "$path" 2>/dev/null || stat -f %z "$path" 2>/dev/null || echo 0)
-        human=$(format_size "$bytes")
-        printf '      <li><a href="/android/%s" download>%s</a><span class="filesize">%s</span></li>\n' "$fname" "$fname" "$human"
-      done
-      echo "    </ul>"
-      if [[ -f "${APK_DIR}/android/SHA256SUMS.txt" ]]; then
-        echo '    <p class="checksums"><a href="/android/SHA256SUMS.txt">Verify checksums</a></p>'
-      fi
-    else
-      echo '    <p class="empty">No Android builds uploaded yet.</p>'
-    fi
-
-    cat <<'EOF'
-  </section>
-  <section id="ios" class="platform">
-    <h2>iOS builds</h2>
-    <p>IPA files for iPhone and iPad (requires appropriate provisioning).</p>
-EOF
-
-    if (( ${#ios_files[@]} )); then
-      echo "    <ul class=\"download-list\">"
-      local fname bytes human
-      for path in "${ios_files[@]}"; do
-        [[ -f "$path" ]] || continue
-        fname="${path##*/}"
-        bytes=$(stat -c %s "$path" 2>/dev/null || stat -f %z "$path" 2>/dev/null || echo 0)
-        human=$(format_size "$bytes")
-        printf '      <li><a href="/ios/%s" download>%s</a><span class="filesize">%s</span></li>\n' "$fname" "$fname" "$human"
-      done
-      echo "    </ul>"
-      if [[ -f "${APK_DIR}/ios/SHA256SUMS.txt" ]]; then
-        echo '    <p class="checksums"><a href="/ios/SHA256SUMS.txt">Verify checksums</a></p>'
-      fi
-    else
-      echo '    <p class="empty">No iOS builds uploaded yet.</p>'
-    fi
-
-    cat <<'EOF'
-  </section>
-  <section class="platform nodownload">
-    <h2>Don't need any downloads?</h2>
-    <p>You can simply close this page or tap below to confirm you are ready.</p>
-    <p><a class="button" href="/continue.html">Continue without download</a></p>
-  </section>
-</main>
-<footer>
-  <p>Admins: upload Android files to ${APK_DIR}/android and iOS files to ${APK_DIR}/ios.</p>
-</footer>
-</body></html>
-EOF
-  } >"$index_path"
-  chmod 0644 "$index_path"
-
-  cat >"$continue_path" <<EOF
-<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Continue</title>
-<style>body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Ubuntu,Cantarell,"Helvetica Neue",Arial,sans-serif;text-align:center;max-width:640px;margin:20vh auto;padding:0 1.5rem;color:#212529}</style>
-</head><body>
-<h1>You're all set</h1>
-<p>If you don't need to download anything, you can now close this page or open another website/app.</p>
-<p><a href="/">Back to downloads</a></p>
-</body></html>
-EOF
-  chmod 0644 "$continue_path"
-}
-
-refresh_download_index() {
-  generate_checksums
-  generate_download_index
-}
-
-configure_dhcpcd() {
-  local conf=/etc/dhcpcd.conf
-  local S="# BEGIN apk-ap v3"
-  local E="# END apk-ap v3"
-  local block="interface ${WLAN_IF}
-static ip_address=${AP_IP}${SUBNET_CIDR}
-nohook wpa_supplicant"
-  touch "$conf"
-  append_once "$conf" "$S" "$E" "$block"
-  systemctl restart dhcpcd || true
-}
-
-configure_hostapd() {
-  mkdir -p /etc/hostapd
-  write_file_content /etc/hostapd/hostapd.conf "interface=${WLAN_IF}
+#################
+# hostapd (AP)  #
+#################
+echo "[4/12] Configuring hostapd…"
+cat >/etc/hostapd/hostapd.conf <<EOF
+interface=${WLAN_IF}
+driver=nl80211
 ssid=${SSID}
 hw_mode=g
-channel=6
+channel=${CHANNEL}
+ieee80211n=1
 wmm_enabled=1
 auth_algs=1
 wpa=2
-wpa_passphrase=${PASSPHRASE}
+wpa_passphrase=${WPA_PASSPHRASE}
 wpa_key_mgmt=WPA-PSK
-rsn_pairwise=CCMP"
-  # Point daemon to config
-  if ! grep -q "DAEMON_CONF" /etc/default/hostapd 2>/dev/null; then
-    echo 'DAEMON_CONF="/etc/hostapd/hostapd.conf"' >> /etc/default/hostapd
-  else
-    sed -i 's|^#\?\s*DAEMON_CONF=.*$|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
-  fi
-  systemctl unmask hostapd || true
-  systemctl enable --now hostapd
+rsn_pairwise=CCMP
+EOF
+sed -i 's|^#\?DAEMON_CONF=.*|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' /etc/default/hostapd
+systemctl enable --now hostapd
+
+#################
+# dnsmasq (DHCP/DNS with pretty URL)
+#################
+echo "[5/12] Configuring dnsmasq (DHCP/DNS + ${PORTAL_HOST})…"
+if [[ -f /etc/dnsmasq.conf ]]; then
+  mv /etc/dnsmasq.conf /etc/dnsmasq.conf.backup.$(date +%s)
+fi
+
+cat >/etc/dnsmasq.conf <<EOF
+interface=${WLAN_IF}
+bind-interfaces
+
+# DHCP pool
+dhcp-range=${DHCP_RANGE_START},${DHCP_RANGE_END},${DHCP_LEASE}
+dhcp-option=3,${AP_IP}
+dhcp-option=6,${AP_IP}
+
+# Local domain hint (pure cosmetica)
+domain=lan
+
+# Map friendly hostnames to the portal IP
+address=/${PORTAL_HOST}/${AP_IP}
+EOF
+# extra hostnames
+for H in "${EXTRA_HOSTS[@]}"; do
+  echo "address=/${H}/${AP_IP}" >> /etc/dnsmasq.conf
+done
+
+# Avoid port 53 conflicts with systemd-resolved
+systemctl disable --now systemd-resolved 2>/dev/null || true
+systemctl enable --now dnsmasq
+
+#############################
+# nftables (one-time redirect)
+#############################
+echo "[6/12] Configuring nftables one-time HTTP redirect…"
+cat >/etc/nftables.conf <<EOF
+flush ruleset
+
+define PORTAL_IP = ${AP_IP}
+
+table ip nat {
+  set whitelist {
+    type ipv4_addr
+    flags timeout
+    timeout ${WHITELIST_TIMEOUT}
+  }
+
+  chain prerouting {
+    type nat hook prerouting priority -100;
+
+    # traffic destined to portal itself -> leave it
+    ip daddr \$PORTAL_IP return
+
+    # already whitelisted source -> leave it
+    ip saddr @whitelist return
+
+    # only capture HTTP (80); HTTPS stays private
+    tcp dport 80 dnat to \$PORTAL_IP:80
+  }
+
+  chain postrouting {
+    type nat hook postrouting priority 100;
+    # uncomment if you share internet via eth0:
+    # oifname "eth0" masquerade
+  }
 }
+EOF
+systemctl enable --now nftables
 
-configure_dnsmasq() {
-  local conf=/etc/dnsmasq.conf
-  write_file_content "$conf" "interface=${WLAN_IF}
-dhcp-range=${DHCP_RANGE}
-# Hijack DNS to local IP for captive-like landing
-address=/#/${AP_IP}
-# Speed tweaks
-dhcp-option=option:router,${AP_IP}
-log-queries
-log-dhcp"
-  systemctl enable --now dnsmasq
+#########################################
+# tiny Flask API to "free" client IPs   #
+#########################################
+echo "[7/12] Installing tiny whitelist API…"
+cat >/opt/captive_free.py <<'PY'
+from flask import Flask, request, jsonify
+import subprocess, ipaddress, os
+
+app = Flask(__name__)
+
+SET_NAME = "whitelist"
+TABLE_FAMILY = "ip"
+TABLE_NAME = "nat"
+TIMEOUT = os.environ.get("WHITELIST_TIMEOUT", "8h")
+
+def add_to_whitelist(ip):
+    ipaddress.IPv4Address(ip)  # sanity
+    cmd = ["nft", "add", "element", TABLE_FAMILY, TABLE_NAME, SET_NAME, f"{{ {ip} timeout {TIMEOUT} }}"]
+    subprocess.run(cmd, check=True)
+
+@app.get("/free")
+def free():
+    ip = request.headers.get("X-Real-IP") or request.remote_addr
+    try:
+        add_to_whitelist(ip)
+        return jsonify({"ok": True, "ip": ip})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+if __name__ == "__main__":
+    app.run(host="127.0.0.1", port=5000)
+PY
+
+cat >/etc/systemd/system/captive-free.service <<EOF
+[Unit]
+Description=Captive Portal Whitelist API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=WHITELIST_TIMEOUT=${WHITELIST_TIMEOUT}
+ExecStart=/usr/bin/python3 /opt/captive_free.py
+Restart=always
+User=www-data
+Group=www-data
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now captive-free.service
+
+#################
+# nginx (portal)
+#################
+echo "[8/12] Configuring nginx site…"
+mkdir -p "${APK_DIR}/icons"
+
+# PWA manifest
+cat >"${APK_DIR}/manifest.webmanifest" <<'JSON'
+{
+  "name": "APK Downloads",
+  "short_name": "APK Spot",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
 }
+JSON
 
-configure_nginx() {
-  mkdir -p "$APK_DIR"{"","/android","/ios"}
-  chown -R "$SUDO_USER:${SUDO_USER:-$USER}" "$APK_DIR" 2>/dev/null || true
+# Basic icons (vervang met iets minder lelijk als je tijd hebt)
+convert -size 192x192 xc:white "${APK_DIR}/icons/icon-192.png" 2>/dev/null || true
+convert -size 512x512 xc:white "${APK_DIR}/icons/icon-512.png" 2>/dev/null || true
 
-  # Site config
-  local site=/etc/nginx/sites-available/apk
-  write_file_content "$site" "server {
-    listen ${AP_IP}:80 default_server;
+# Portal index
+cat >"${APK_DIR}/index.html" <<'HTML'
+<!doctype html><html><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="manifest" href="/manifest.webmanifest">
+<title>Local APK Downloads</title>
+<style>
+body{font-family:system-ui,Arial;max-width:720px;margin:40px auto;padding:0 16px}
+a{display:inline-block;margin:6px 0}
+.btn{display:inline-block;padding:10px 14px;border:1px solid #ddd;border-radius:8px;text-decoration:none}
+.note{background:#fff3cd;border:1px solid #ffeeba;padding:10px;border-radius:8px}
+#list a{display:block;margin:8px 0}
+</style>
+</head><body>
+<h1>Local APK Downloads</h1>
+
+<p class="note">
+<strong>Bookmark?</strong> Open het browsermenu en kies <em>Toevoegen aan bladwijzers</em> of <em>Toevoegen aan startscherm</em>.
+Zie je een “Installeren/Add to Home screen” prompt? Klik die. Magie zonder toestemming bestaat niet, helaas.
+</p>
+
+<div id="list"></div>
+
+<p><a id="continue" class="btn" href="#">Verder naar internet</a></p>
+
+<script>
+async function loadList(){
+  try{
+    const r = await fetch('./_list.json', {cache:'no-store'});
+    const files = await r.json();
+    document.getElementById('list').innerHTML =
+      files.map(f=>`<a href="${f}">${f}</a>`).join('') || '<em>Geen APKs gevonden.</em>';
+  }catch(e){
+    document.getElementById('list').textContent = 'Kan lijst niet laden.';
+  }
+}
+loadList();
+
+let deferredPrompt;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+  const installBtn = document.createElement('a');
+  installBtn.textContent = 'Installeren (Add to Home screen)';
+  installBtn.href = '#';
+  installBtn.className = 'btn';
+  installBtn.onclick = async (ev) => {
+    ev.preventDefault();
+    if(deferredPrompt){
+      deferredPrompt.prompt();
+      await deferredPrompt.userChoice;
+      deferredPrompt = null;
+    }
+  };
+  document.body.insertBefore(installBtn, document.getElementById('list'));
+});
+
+document.getElementById('continue').addEventListener('click', async (e)=>{
+  e.preventDefault();
+  try{ await fetch('/free', {cache:'no-store'}); }catch(e){}
+  const fallback = 'http://' + (location.host || 'apkspot.local') + '/';
+  location.href = document.referrer && !document.referrer.startsWith(location.origin) ? document.referrer : fallback;
+});
+</script>
+</body></html>
+HTML
+
+# APK list generator
+cat >/usr/local/bin/mk-apk-list <<'SH'
+#!/usr/bin/env bash
+set -e
+cd /srv/apks || exit 1
+ls -1 *.apk 2>/dev/null | jq -R -s 'split("\n") | map(select(length>0))' > _list.json
+SH
+chmod +x /usr/local/bin/mk-apk-list
+mkdir -p "${APK_DIR}"
+/usr/local/bin/mk-apk-list || true
+chown -R www-data:www-data "${APK_DIR}"
+
+# nginx site
+cat >/etc/nginx/sites-available/apks <<'NGINX'
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
     server_name _;
 
-    # Only allow the hotspot subnet
-    allow ${SUBNET_PREFIX}.0/24;
-    deny all;
+    root /srv/apks;
+    index index.html;
 
-    root ${APK_DIR};
-    types { application/vnd.android.package-archive apk; application/octet-stream ipa; }
+    types {
+        application/vnd.android.package-archive apk;
+    }
 
+    # Static + portal
     location / {
-        try_files /index.html =404;
+        try_files $uri $uri/ /index.html;
     }
 
-    location /android/ {
-        autoindex on;
-        add_header Content-Disposition \"attachment\";
+    location = /_list.json {
+        try_files $uri =404;
+        add_header Cache-Control "no-store";
     }
 
-    location /ios/ {
-        autoindex on;
-        add_header Content-Disposition \"attachment\";
+    # Whitelist API
+    location /free {
+        proxy_pass http://127.0.0.1:5000/free;
+        proxy_set_header X-Real-IP $remote_addr;
+        add_header Cache-Control "no-store";
     }
-
-    location = /continue.html {
-        try_files /continue.html =404;
-    }
-  }"
-  ln -sf "$site" /etc/nginx/sites-enabled/apk
-  rm -f /etc/nginx/sites-enabled/default
-
-  refresh_download_index
-
-  # QR code for convenience
-  qrencode -o "${APK_DIR}/apk-qr.png" "http://${AP_IP}/" || true
-
-  nginx -t
-  systemctl enable --now nginx
-  systemctl restart nginx
 }
+NGINX
 
-configure_nftables() {
-  local conf=/etc/nftables.conf
-  write_file_content "$conf" "flush ruleset
+ln -sf /etc/nginx/sites-available/apks /etc/nginx/sites-enabled/default
+nginx -t
+systemctl enable --now nginx
+systemctl reload nginx
 
-table inet filter {
-  chain input {
-    type filter hook input priority 0;
-    ct state established,related accept
+##################################
+# Bring it all up (again, neatly)
+##################################
+echo "[9/12] Restarting services…"
+systemctl restart dhcpcd
+systemctl restart dnsmasq
+systemctl restart nftables
+systemctl restart captive-free
+systemctl restart hostapd
+systemctl restart nginx
 
-    # loopback
-    iifname \"lo\" accept
+echo "[10/12] Wi-Fi AP should be up as SSID: ${SSID}"
+echo "[11/12] Pretty URL:   http://${PORTAL_HOST}/    (en ook: ${EXTRA_HOSTS[*]:-geen})"
+echo "[12/12] Drop APKs in ${APK_DIR} en run: /usr/local/bin/mk-apk-list"
 
-    # ICMP (ping) optional but handy
-    ip protocol icmp accept
-    ip6 nexthdr icmpv6 accept
-
-    # DHCP (dnsmasq)
-    iifname \"${WLAN_IF}\" udp dport 67 accept
-    iifname \"${WLAN_IF}\" udp sport 67 accept
-
-    # DNS (dnsmasq)
-    iifname \"${WLAN_IF}\" tcp dport 53 accept
-    iifname \"${WLAN_IF}\" udp dport 53 accept
-
-    # HTTP (nginx)
-    iifname \"${WLAN_IF}\" tcp dport 80 accept
-
-    # SSH
-    $(
-      if [[ "$ALLOW_SSH_ANYWHERE" == "1" ]]; then
-        echo "tcp dport 22 accept"
-      else
-        echo "iifname \"${WLAN_IF}\" tcp dport 22 accept"
-      fi
-    )
-
-    # default
-    counter drop
-  }
-  chain forward { type filter hook forward priority 0; drop; }
-  chain output  { type filter hook output priority 0; accept; }
-}"
-  systemctl enable --now nftables
-}
-
-configure_nodogsplash() {
-  if [[ "$ENABLE_NODOGSPLASH" != "1" ]]; then
-    return 0
-  fi
-  # Very minimal config; nodogsplash integrates primarily with iptables. On newer systems it may work with nft shim.
-  local conf=/etc/nodogsplash/nodogsplash.conf
-  backup_file "$conf"
-  sed -i "s/^GatewayInterface.*/GatewayInterface ${WLAN_IF}/" "$conf" || true
-  sed -i "s/^GatewayAddress.*/GatewayAddress ${AP_IP}/" "$conf" || true
-
-  # Simple splash page linking to our local index
-  local html=/usr/share/nodogsplash/htdocs/splash.html
-  backup_file "$html"
-  cat >"$html" <<EOF
-<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<style>body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Ubuntu,Cantarell,"Helvetica Neue",Arial,sans-serif;max-width:680px;margin:2rem auto;padding:0 1rem;color:#212529}</style>
-<title>Welcome</title></head>
-<body>
-<h1>Welcome to ${SSID}</h1>
-<p>You are connected to the local download hotspot. Choose what to do next:</p>
-<ul>
-  <li><a href=\"http://${AP_IP}/\">Browse available downloads</a></li>
-  <li><a href=\"http://${AP_IP}/continue.html\">Continue without downloading</a></li>
-</ul>
-<p>If you later need files again, return to <a href=\"http://${AP_IP}/\">http://${AP_IP}/</a>.</p>
-</body></html>
-EOF
-  systemctl enable --now nodogsplash || true
-}
-
-post_summary() {
-  echo "\n=== Done ==="
-  echo "SSID: ${SSID}"
-  echo "Passphrase: ${PASSPHRASE}"
-  echo "AP IP: ${AP_IP}"
-  echo "Download root: ${APK_DIR}"
-  echo "Browse: http://${AP_IP}/"
-  cat <<EOF
-Upload instructions:
-  • Android files → ${APK_DIR}/android (APK/AAB)
-  • iOS files → ${APK_DIR}/ios (IPA)
-  • Refresh landing page & checksums after uploading: sudo ./mesh_server.sh --refresh-index
-EOF
-}
-
-refresh_index_only() {
-  need_root
-  mkdir -p "$APK_DIR"{"","/android","/ios"}
-  chown -R "$SUDO_USER:${SUDO_USER:-$USER}" "$APK_DIR" 2>/dev/null || true
-  refresh_download_index
-  systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
-  echo "Updated ${APK_DIR}/index.html with current downloads."
-}
-
-main() {
-  if [[ "${1:-}" == "--refresh-index" ]]; then
-    refresh_index_only
-    return 0
-  fi
-
-  need_root
-  install_packages
-  configure_dhcpcd
-  configure_hostapd
-  configure_dnsmasq
-  configure_nginx
-  configure_nftables
-  configure_nodogsplash
-  post_summary
-}
-
-main "$@"
+echo
+echo "Notes:"
+echo "- Eerste HTTP-poging wordt naar de portal gestuurd; na 'Verder' is je IP vrij voor ${WHITELIST_TIMEOUT}."
+echo "- HTTPS wordt niet gekaapt (bewust). Maar je mooie URL werkt voor HTTP."
+echo "- Internet delen via eth0? Uncomment de 'masquerade' in /etc/nftables.conf en:"
+echo "    echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-ipforward.conf && sysctl --system"
+echo "- Logs (als het uiteraard weer niet werkt):"
+echo "    journalctl -fu hostapd  # Wi-Fi"
+echo "    journalctl -fu dnsmasq  # DHCP/DNS"
+echo "    journalctl -fu nginx    # Portal"
+echo "    journalctl -fu nftables # NAT rules"
+echo "    journalctl -fu captive-free # Whitelist API"
