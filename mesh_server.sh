@@ -6,6 +6,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PORTAL_SRC_DIR="${SCRIPT_DIR}/portal"
+
 ############################
 # --- CONFIG VARIABLES --- #
 ############################
@@ -250,71 +253,18 @@ convert -size 192x192 xc:white "${APK_DIR}/icons/icon-192.png" 2>/dev/null || tr
 convert -size 512x512 xc:white "${APK_DIR}/icons/icon-512.png" 2>/dev/null || true
 
 # Portal index
-cat >"${APK_DIR}/index.html" <<'HTML'
-<!doctype html><html><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="manifest" href="/manifest.webmanifest">
-<title>Local APK Downloads</title>
-<style>
-body{font-family:system-ui,Arial;max-width:720px;margin:40px auto;padding:0 16px}
-a{display:inline-block;margin:6px 0}
-.btn{display:inline-block;padding:10px 14px;border:1px solid #ddd;border-radius:8px;text-decoration:none}
-.note{background:#fff3cd;border:1px solid #ffeeba;padding:10px;border-radius:8px}
-#list a{display:block;margin:8px 0}
-</style>
-</head><body>
-<h1>Local APK Downloads</h1>
+if [[ ! -f "${PORTAL_SRC_DIR}/index.html" ]]; then
+  echo "Portal template missing: ${PORTAL_SRC_DIR}/index.html"
+  exit 1
+fi
+if [[ ! -f "${PORTAL_SRC_DIR}/styles.css" ]]; then
+  echo "Portal stylesheet missing: ${PORTAL_SRC_DIR}/styles.css"
+  exit 1
+fi
 
-<p class="note">
-<strong>Bookmark?</strong> Open het browsermenu en kies <em>Toevoegen aan bladwijzers</em> of <em>Toevoegen aan startscherm</em>.
-Zie je een “Installeren/Add to Home screen” prompt? Klik die. Magie zonder toestemming bestaat niet, helaas.
-</p>
-
-<div id="list"></div>
-
-<p><a id="continue" class="btn" href="#">Verder naar internet</a></p>
-
-<script>
-async function loadList(){
-  try{
-    const r = await fetch('./_list.json', {cache:'no-store'});
-    const files = await r.json();
-    document.getElementById('list').innerHTML =
-      files.map(f=>`<a href="${f}">${f}</a>`).join('') || '<em>Geen APKs gevonden.</em>';
-  }catch(e){
-    document.getElementById('list').textContent = 'Kan lijst niet laden.';
-  }
-}
-loadList();
-
-let deferredPrompt;
-window.addEventListener('beforeinstallprompt', (e) => {
-  e.preventDefault();
-  deferredPrompt = e;
-  const installBtn = document.createElement('a');
-  installBtn.textContent = 'Installeren (Add to Home screen)';
-  installBtn.href = '#';
-  installBtn.className = 'btn';
-  installBtn.onclick = async (ev) => {
-    ev.preventDefault();
-    if(deferredPrompt){
-      deferredPrompt.prompt();
-      await deferredPrompt.userChoice;
-      deferredPrompt = null;
-    }
-  };
-  document.body.insertBefore(installBtn, document.getElementById('list'));
-});
-
-document.getElementById('continue').addEventListener('click', async (e)=>{
-  e.preventDefault();
-  try{ await fetch('/free', {cache:'no-store'}); }catch(e){}
-  const fallback = 'http://' + (location.host || 'apkspot.local') + '/';
-  location.href = document.referrer && !document.referrer.startsWith(location.origin) ? document.referrer : fallback;
-});
-</script>
-</body></html>
-HTML
+mkdir -p "${APK_DIR}"
+install -m 644 "${PORTAL_SRC_DIR}/index.html" "${APK_DIR}/index.html"
+install -m 644 "${PORTAL_SRC_DIR}/styles.css" "${APK_DIR}/styles.css"
 
 # APK list generator
 cat >/usr/local/bin/mk-apk-list <<'SH'
