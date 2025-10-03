@@ -43,6 +43,86 @@ def read_node_status():
         print(f"Error reading node_status.json: {e}")
         return {}
 
+
+PEER_DISCOVERY_PATHS = [
+    '/home/natak/mesh/reticulum_handler/peer_discovery.json',
+    '/home/natak/mesh/reticulum/peer_discovery.json',
+    '/var/log/reticulum/peer_discovery.json',
+]
+
+
+def _normalize_peer_record(name, info, current_time):
+    """Normalize a peer discovery record into the structure the UI expects."""
+    if not isinstance(info, dict):
+        return None
+
+    destination_hash = info.get('destination_hash') or info.get('hash') or info.get('destination')
+    last_seen = info.get('last_seen') or info.get('timestamp') or info.get('seen')
+    peer_current_time = info.get('current_time') or info.get('current')
+
+    try:
+        if last_seen is not None:
+            last_seen = float(last_seen)
+    except (TypeError, ValueError):
+        last_seen = None
+
+    try:
+        if peer_current_time is not None:
+            peer_current_time = float(peer_current_time)
+    except (TypeError, ValueError):
+        peer_current_time = None
+
+    if peer_current_time is None:
+        peer_current_time = current_time
+
+    if last_seen is None:
+        last_seen = peer_current_time
+
+    if not destination_hash:
+        destination_hash = str(name)
+
+    return {
+        'destination_hash': destination_hash,
+        'last_seen': last_seen,
+        'current_time': peer_current_time
+    }
+
+
+def read_peer_discovery():
+    """Read Reticulum peer discovery information if available."""
+    current_time = time.time()
+
+    for path in PEER_DISCOVERY_PATHS:
+        try:
+            with open(path, 'r') as f:
+                raw_data = json.load(f)
+
+            peers = {}
+
+            if isinstance(raw_data, dict) and 'peers' in raw_data and isinstance(raw_data['peers'], (dict, list)):
+                raw_data = raw_data['peers']
+
+            if isinstance(raw_data, dict):
+                iterable = raw_data.items()
+            elif isinstance(raw_data, list):
+                iterable = ((entry.get('name') or entry.get('destination_hash') or str(idx), entry)
+                            for idx, entry in enumerate(raw_data))
+            else:
+                continue
+
+            for name, info in iterable:
+                normalized = _normalize_peer_record(name, info, current_time)
+                if normalized:
+                    peers[str(name)] = normalized
+
+            return peers
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            print(f"Error reading peer discovery from {path}: {e}")
+
+    return {}
+
 def get_current_channel():
     """Read current channel from batmesh.sh"""
     try:
@@ -174,6 +254,17 @@ def api_wifi():
         'hostname': socket.gethostname(),
         'local_mac': get_local_mac(),
         'node_status': read_node_status(),
+        'node_timeout': NODE_TIMEOUT
+    })
+
+
+@app.route('/api/node-status')
+def api_node_status():
+    """Combined node status endpoint used by the overview dashboard."""
+    return jsonify({
+        'hostname': socket.gethostname(),
+        'node_status': read_node_status(),
+        'peer_discovery': read_peer_discovery(),
         'node_timeout': NODE_TIMEOUT
     })
 
