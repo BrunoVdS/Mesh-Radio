@@ -79,48 +79,87 @@
         }
     </style>
     <script>
+        function formatStat(value, options = {}) {
+            if (value === undefined || value === null || Number.isNaN(value)) {
+                return options.fallback !== undefined ? options.fallback : 'N/A';
+            }
+
+            if (options.decimals !== undefined) {
+                const numericValue = typeof value === 'number' ? value : parseFloat(value);
+                if (!Number.isNaN(numericValue)) {
+                    return numericValue.toFixed(options.decimals);
+                }
+            }
+
+            return value;
+        }
+
         function updateData() {
             fetch('/api/node-status')
-                .then(response => response.json())
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    return response.json();
+                })
                 .then(data => {
                     // Update the hostname
                     document.querySelector('h1').textContent = data.hostname;
-                    
+
                     // Update node status
                     const nodeGrid = document.querySelector('.node-grid');
                     nodeGrid.innerHTML = '';  // Clear current nodes
-                    
-                    Object.entries(data.node_status).forEach(([mac, node]) => {
+
+                    const nodes = data.node_status ? Object.entries(data.node_status) : [];
+
+                    nodes.forEach(([mac, node]) => {
+                        const mode = (node.mode || '').toString();
+                        const modeClass = mode ? `mode-${mode.toLowerCase()}` : '';
+                        const lastSeen = typeof node.last_seen === 'number' ? node.last_seen : parseFloat(node.last_seen);
+                        const throughput = typeof node.throughput === 'number' ? node.throughput : parseFloat(node.throughput);
+
                         nodeGrid.innerHTML += `
                             <div class="node-card">
                                 <h3>${node.hostname}</h3>
-                                <div class="stats">IP: ${node.ip}</div>
+                                <div class="stats">IP: ${node.ip || 'N/A'}</div>
                                 <div class="stats">MAC: ${mac}</div>
-                                <div class="stats">Mode: <span class="mode-${node.mode.toLowerCase()}">${node.mode}</span></div>
-                                <div class="stats">Last Seen: ${node.last_seen.toFixed(2)}s</div>
-                                <div class="stats">Throughput: ${node.throughput.toFixed(1)}</div>
+                                <div class="stats">Mode: <span class="${modeClass}">${mode || 'N/A'}</span></div>
+                                <div class="stats">Last Seen: ${formatStat(lastSeen, { decimals: 2 })}s</div>
+                                <div class="stats">Throughput: ${formatStat(throughput, { decimals: 1 })}</div>
                                 <div class="stats">Next Hop: ${node.nexthop}</div>
-                                <div class="stats">Failure Count: ${node.failure_count}</div>
-                                <div class="stats">Good Count: ${node.good_count}</div>
+                                <div class="stats">Failure Count: ${formatStat(node.failure_count, { fallback: 0 })}</div>
+                                <div class="stats">Good Count: ${formatStat(node.good_count, { fallback: 0 })}</div>
                             </div>
                         `;
                     });
-                    
+
                     // Update peer list
                     const peerList = document.querySelector('.peer-list');
                     peerList.innerHTML = '';  // Clear current peers
-                    
-                    Object.entries(data.peer_discovery).forEach(([name, peer]) => {
-                        const secondsAgo = Math.floor(peer.current_time - peer.last_seen);
-                        peerList.innerHTML += `
+
+                    const peers = data.peer_discovery ? Object.entries(data.peer_discovery) : [];
+
+                    if (peers.length === 0) {
+                        peerList.innerHTML = `
                             <div class="peer-card">
-                                <h3>${name}</h3>
-                                <div class="stats">Destination Hash: ${peer.destination_hash}</div>
-                                <div class="stats">Last Seen: ${secondsAgo} seconds ago</div>
+                                <div class="stats">No peers discovered yet.</div>
                             </div>
                         `;
-                    });
-                    
+                    } else {
+                        peers.forEach(([name, peer]) => {
+                            const lastSeen = typeof peer.last_seen === 'number' ? peer.last_seen : parseFloat(peer.last_seen);
+                            const currentTime = typeof peer.current_time === 'number' ? peer.current_time : parseFloat(peer.current_time);
+                            const secondsAgo = Math.max(0, Math.floor(currentTime - lastSeen));
+                            peerList.innerHTML += `
+                                <div class="peer-card">
+                                    <h3>${name}</h3>
+                                    <div class="stats">Destination Hash: ${peer.destination_hash || 'unknown'}</div>
+                                    <div class="stats">Last Seen: ${secondsAgo} seconds ago</div>
+                                </div>
+                            `;
+                        });
+                    }
+
                     // Schedule next update
                     setTimeout(updateData, 2000); // Refresh every 2 seconds (faster than before)
                 })
@@ -141,7 +180,7 @@
     <div class="section">
         <h2>BATMAN Mesh Status</h2>
         <div class="node-grid">
-            {% for mac, node in node_status.items() %}
+            {% for mac, node in (node_status or {}).items() %}
             <div class="node-card">
                 <h3>{{ node.hostname }}</h3>
                 <div class="stats">IP: {{ node.ip }}</div>
@@ -160,7 +199,7 @@
     <div class="section">
         <h2>Reticulum Peers</h2>
         <div class="peer-list">
-            {% for name, peer in peer_discovery.items() %}
+            {% for name, peer in (peer_discovery or {}).items() %}
             <div class="peer-card">
                 <h3>{{ name }}</h3>
                 <div class="stats">Destination Hash: {{ peer.destination_hash }}</div>
