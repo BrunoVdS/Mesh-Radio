@@ -1,4 +1,4 @@
-from flask import Flask, render_template, Response, jsonify, request
+from flask import Flask, render_template, Response, jsonify, request, stream_with_context
 import socket
 import subprocess
 import json
@@ -160,12 +160,43 @@ def read_packet_logs():
         print(f"Error reading packet_logs.log: {e}")
         return []
 
+
+def format_packet_logs(log_entries):
+    formatted = []
+    for entry in log_entries:
+        if isinstance(entry, dict):
+            message = entry.get('message')
+            if message:
+                formatted.append(message)
+        else:
+            formatted.append(str(entry))
+    return formatted
+
 @app.route('/packet-logs')
 def packet_logs():
-    logs = read_packet_logs()
-    return render_template('packet_logs.html', 
+    logs = format_packet_logs(read_packet_logs())
+    return render_template('packet_logs.html',
                          hostname=socket.gethostname(),
                          logs=logs)
+
+
+@app.route('/packet-log-events')
+def packet_log_events():
+    def generate():
+        last_payload = None
+        while True:
+            logs = format_packet_logs(read_packet_logs())
+            payload = {
+                'success': True,
+                'hostname': socket.gethostname(),
+                'logs': logs
+            }
+            if payload != last_payload:
+                yield f"data: {json.dumps(payload)}\n\n"
+                last_payload = payload
+            time.sleep(1)
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 @app.route('/api/wifi')
 def api_wifi():
@@ -181,8 +212,9 @@ def api_wifi():
 @app.route('/api/packet-logs')
 def api_packet_logs():
     return jsonify({
+        'success': True,
         'hostname': socket.gethostname(),
-        'logs': read_packet_logs()
+        'logs': format_packet_logs(read_packet_logs())
     })
 
 @app.route('/api/mesh-config', methods=['GET'])
