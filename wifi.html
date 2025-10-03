@@ -185,17 +185,25 @@
         };
 
         function loadMeshConfig() {
+            const channelEl = document.getElementById('current-channel');
+            const frequencyEl = document.getElementById('current-frequency');
+            const select = document.getElementById('channel-select');
+
+            if (!channelEl || !frequencyEl || !select) {
+                console.warn('Mesh configuration elements missing. Skipping loadMeshConfig().');
+                return;
+            }
+
             fetch('/api/mesh-config')
                 .then(response => response.json())
                 .then(data => {
                     // Update current channel display
-                    document.getElementById('current-channel').textContent = data.current_channel;
-                    document.getElementById('current-frequency').textContent = data.current_frequency;
-                    
+                    channelEl.textContent = data.current_channel;
+                    frequencyEl.textContent = data.current_frequency;
+
                     // Populate channel selector
-                    const select = document.getElementById('channel-select');
                     select.innerHTML = '';
-                    
+
                     // Group channels by band
                     const channels_24 = data.available_channels.filter(ch => ch <= 14);
                     const channels_5 = data.available_channels.filter(ch => ch > 14);
@@ -235,9 +243,24 @@
         }
 
         function changeChannel() {
-            const selectedChannel = parseInt(document.getElementById('channel-select').value);
-            const currentChannel = parseInt(document.getElementById('current-channel').textContent);
-            
+            const select = document.getElementById('channel-select');
+            const currentChannelEl = document.getElementById('current-channel');
+            const button = document.getElementById('apply-channel');
+
+            if (!select || !currentChannelEl || !button) {
+                console.warn('Channel controls missing. Skipping changeChannel().');
+                return;
+            }
+
+            const selectedChannel = parseInt(select.value);
+            const currentChannel = parseInt(currentChannelEl.textContent);
+
+            if (Number.isNaN(selectedChannel) || Number.isNaN(currentChannel)) {
+                console.warn('Channel values invalid. Skipping changeChannel().');
+                showStatus('Unable to determine current or selected channel.', 'error');
+                return;
+            }
+
             if (selectedChannel === currentChannel) {
                 showStatus('Channel is already set to ' + selectedChannel, 'error');
                 return;
@@ -248,7 +271,6 @@
             }
             
             // Disable button during operation
-            const button = document.getElementById('apply-channel');
             button.disabled = true;
             button.textContent = 'Applying...';
             
@@ -274,7 +296,7 @@
             .catch(error => {
                 console.error('Channel change failed:', error);
                 showStatus('Failed to change channel', 'error');
-                
+
                 // Re-enable button
                 button.disabled = false;
                 button.textContent = 'Apply Channel';
@@ -283,6 +305,12 @@
 
         function showStatus(message, type) {
             const statusDiv = document.getElementById('config-status');
+
+            if (!statusDiv) {
+                console.warn('Status element missing. Message:', message);
+                return;
+            }
+
             statusDiv.textContent = message;
             statusDiv.className = `status-message status-${type}`;
             statusDiv.style.display = 'block';
@@ -335,7 +363,9 @@
         // Start the update cycle when page loads
         document.addEventListener('DOMContentLoaded', function() {
             updateData();
-            loadMeshConfig();
+            if (document.getElementById('mesh-config-section')) {
+                loadMeshConfig();
+            }
         });
     </script>
 </head>
@@ -348,6 +378,30 @@
         <div class="nav">
             <a href="/" class="active">WiFi</a>
             <a href="/management">Management</a>
+        </div>
+    </div>
+
+    <div class="section" id="mesh-config-section">
+        <h2>Wi-Fi Mesh Channel</h2>
+        <div class="config-controls">
+            <div class="current-config">
+                <strong>Current Channel:</strong> <span id="current-channel">{{ current_channel }}</span>
+                (<span id="current-frequency">{{ current_frequency }}</span> MHz)
+            </div>
+
+            <div class="channel-selector">
+                <label for="channel-select">Change Channel:</label>
+                <select id="channel-select">
+                    <!-- Populated by JavaScript -->
+                </select>
+                <button id="apply-channel" onclick="changeChannel()">Apply Channel</button>
+            </div>
+
+            <div class="disclaimer" style="font-size: 14px; color: #ff9800; margin-top: 8px;">
+                Note: Node must be rebooted for channel changes to take effect.
+            </div>
+
+            <div id="config-status" class="status-message"></div>
         </div>
     </div>
 
