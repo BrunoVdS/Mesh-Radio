@@ -64,7 +64,7 @@ SYSTEMCTL=$(command -v systemctl || true)
 require_raspberry_pi_os() {
   if [ ! -r /etc/os-release ]; then
     echo "Unable to detect operating system (missing /etc/os-release)."
-    exit 1  
+    exit 1
   fi
 
   . /etc/os-release
@@ -76,7 +76,9 @@ require_raspberry_pi_os() {
   fi
 }
 
-echo "Raspberry OS has been detected (/etc/os-release)."
+info "Validating operating system compatibility."
+require_raspberry_pi_os
+info "Raspberry Pi OS detected (${RPI_OS_PRETTY_NAME})."
 
 
 # === Root only
