@@ -226,17 +226,18 @@ info "Installing B.A.T.M.A.N.-Adv."
 if modprobe -n batman-adv 2>/dev/null; then
   log "B.A.T.M.A.N.-Adv kernelmodule is available (dry-run ok) — skip installation proces."
 else
-  log "B.A.T.M.A.N.-Adv module not available; attempt to create and install the B.A.T.M.A.N.-Adv module."
+  log "B.A.T.M.A.N.-Adv module not available. Create and install the B.A.T.M.A.N.-Adv module."
 
-  # Raspberry Pi OS (Raspbian/Debian voor Pi)
+  # === Building the B.A.T.M.A.N.-Adv module
+    # Raspberry Pi OS (Raspbian/Debian voor Pi)
   apt-get install -y raspberrypi-kernel-headers || true
 
-  # If there are still problems, fallback to DKMS-build of B.A.T.M.A.N.-Adv
+    # DKMS-build of B.A.T.M.A.N.-Adv
   apt-get install -y batman-adv-dkms || true
   dpkg-reconfigure -fnoninteractive batman-adv-dkms || true
 fi
 
-# === Load the B.A.T.M.A.N.-Adv module
+  # === Load the B.A.T.M.A.N.-Adv module
 if ! modprobe batman-adv 2>/dev/null; then
   if [ -d "/sys/module/batman_adv" ]; then
     log "B.A.T.M.A.N.-Adv is build in as module; modprobe not nessesary."
@@ -248,12 +249,13 @@ if ! modprobe batman-adv 2>/dev/null; then
   fi
 fi
 
-# === Setting up loading at start
+  # === Setting up loading at start
 printf "%s\n" "batman-adv" > /etc/modules-load.d/batman-adv.conf
 
-# === Update the system withe the install of all new packages
+  # === Update the system withe the install of all new packages
 apt-get update -y
 
+  # === Install complete
 info "Installation of B.A.T.M.A.N.-Adv complete."
 
 sleep 10
@@ -262,7 +264,7 @@ sleep 10
 # === Install Batctl =============================================================
 info "Installing Batctl."
 
-# === First attempt, load the module.
+  # === First attempt, load the module.
   if apt-cache policy batctl 2>/dev/null | grep -q "Candidate:"; then
     apt-get install -y --no-install-recommends batctl
   else
@@ -271,11 +273,11 @@ info "Installing Batctl."
     install -d -m 0755 /usr/local/src
     cd /usr/local/src
 
-# === If you want to install a specific version: export BATCTL_VERSION=2025.0 (of wat je wilt)
+  # === If you want to install a specific version: export BATCTL_VERSION=2025.0 (of wat je wilt)
     if [ -n "${BATCTL_VERSION:-}" ]; then
       log "Build batctl verion: ${BATCTL_VERSION}"
 
-  # First try the release-tarball. Fallback to git.
+    # First try the release-tarball. Fallback to git.
       if command -v curl >/dev/null 2>&1; then
         TAR="batctl-${BATCTL_VERSION}.tar.gz"
         URL="https://downloads.open-mesh.org/batman/releases/${TAR}"
@@ -306,7 +308,7 @@ info "Installing Batctl."
       fi
     else
 
-# === Build HEAD (fastest fallback)
+  # === Build HEAD (fastest fallback)
       if [[ -d batctl ]]; then
         cd batctl
         git pull --ff-only
