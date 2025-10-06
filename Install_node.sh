@@ -85,8 +85,6 @@ if [[ $EUID -ne 0 ]]; then
   exit 1
 fi
 
-require_raspberry_pi_os
-
 info "Running as root (user $(id -un))."
 
 
