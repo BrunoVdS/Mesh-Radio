@@ -9,25 +9,24 @@
     # ==============================================================================
 
 
-
 # === Config =======================================================================
 
-# === Exit on errors, unset vars, or failed pipes; show an error with line number if any command fails
+  # === Exit on errors, unset vars, or failed pipes; show an error with line number if any command fails
 set -Eeuo pipefail
 trap 'error "Unexpected error on line $LINENO"; exit 1' ERR
 
-# === Forcing apt/dpkg to run without prompting for user input, letting the script perform package operations unattended
+  # === Forcing apt/dpkg to run without prompting for user input, letting the script perform package operations unattended
 DEBIAN_FRONTEND=noninteractive
 export DEBIAN_FRONTEND
 
-# === LOGFILE - variables
-  # Log file location
+  # === LOGFILE - variables
+    # Log file location
 LOGFILE="/var/log/mesh-install.log"
 
-  # Create timestamp variable
+    # Create timestamp variable
 timestamp() { date +%F\ %T; }
 
-  # Log helpers (log, info, warn and error)
+    # Log helpers (log, info, warn and error)
 log()   { echo "[$(timestamp)] $*" >>"$LOGFILE"; }
 
 info()  {
@@ -200,7 +199,7 @@ for pkg in "${PACKAGES[@]}"; do
   done
 fi
 
-# === Update the system withe the install of all new packages
+  # === Update the system with the install of all new packages
 apt-get update -y
 
 info "Installation of all packages is complete."
@@ -208,7 +207,7 @@ info "Installation of all packages is complete."
 sleep 10
 
 
-# === Create PIP_INSTALL for Reticulum and Flask =============================================
+  # === Create PIP_INSTALL for Reticulum and Flask
 info "Create PIP_INSTALL variable"
 
 PIP_INSTALL=(python3 -m pip install --upgrade)
@@ -219,7 +218,7 @@ fi
 info "PIP_INSTALL variable created and ready to use"
 
 
-#=== Install B.A.T.M.A.N.-adv ===================================================
+# === Install B.A.T.M.A.N.-adv ===================================================
 info "Installing B.A.T.M.A.N.-Adv."
 
   # === Fast detection: is the module available without the need of installing it?
@@ -264,13 +263,14 @@ sleep 10
 # === Install Batctl =============================================================
 info "Installing Batctl."
 
-  # === First attempt, install via APT.
+  # === Install via APT.
   if apt-cache policy batctl 2>/dev/null | grep -q "Candidate:"; then
     apt-get install -y --no-install-recommends batctl
   else
     log "Batctl not found in APT; falling back to latest source build."
 
-    CURRENT_DIR=$(pwd)
+  # === Fall back to latest source build
+  CURRENT_DIR=$(pwd)
     install -d -m 0755 /usr/local/src
     cd /usr/local/src
 
@@ -286,168 +286,18 @@ info "Installing Batctl."
     cd "$CURRENT_DIR"
   fi
 
-# === Verify installation
+  # === Verify installation
   if ! batctl -v >/dev/null 2>&1; then
     error "Batctl not available after install."
     exit 1
   fi
   log "Batctl Installed: $(batctl -v | head -n1)."
 
-# === Update the system withe the install of all new packages
+  # === Update the system withe the install of all new packages
 apt-get update -y
 
+  # === Install complete
 info "Installation of Batctl complete."
-
-sleep 10
-
-
-#=== NomadNet ===============================================================
-info "Installing NomadNet"
-
-# === Install NomadNet via pip (with fallback to source)
-if "${PIP_INSTALL[@]}" nomadnet; then
-  log "NomadNet installed successfully: $(python3 -m pip show nomadnet 2>/dev/null | grep Version || echo 'unknown version')"
-else
-  error "NomadNet installation failed."
-  exit 1
-fi
-
-# === Locate the NomadNet executable
-NOMADNET_BIN=$(command -v nomadnet || true)
-if [ -z "$NOMADNET_BIN" ]; then
-  error "Unable to locate nomadnet in PATH after installation."
-  exit 1
-fi
-
-# === Prepare runtime directories for the target user
-install -d -m 0755 -o "$TARGET_USER" -g "$TARGET_GROUP" "$TARGET_HOME/.local/share/nomadnet" || true
-install -d -m 0755 -o "$TARGET_USER" -g "$TARGET_GROUP" "$TARGET_HOME/.config/nomadnet" || true
-
-# === Create NomadNet systemd service so it starts on boot
-NOMADNET_SERVICE="/etc/systemd/system/nomadnet.service"
-info "Creating NomadNet systemd service at $NOMADNET_SERVICE."
-
-cat >"$NOMADNET_SERVICE" <<EOF
-[Unit]
-Description=NomadNet Service
-After=network-online.target rnsd.service
-Wants=network-online.target rnsd.service
-
-[Service]
-Type=simple
-User=$TARGET_USER
-Group=$TARGET_GROUP
-Environment=HOME=$TARGET_HOME
-WorkingDirectory=$TARGET_HOME
-ExecStart=$NOMADNET_BIN --serve
-Restart=on-failure
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# === Enable and start NomadNet service
-if [ -n "$SYSTEMCTL" ]; then
-  $SYSTEMCTL daemon-reload
-  $SYSTEMCTL enable nomadnet.service
-  $SYSTEMCTL restart nomadnet.service
-else
-  warn "systemctl not available; please enable nomadnet manually."
-fi
-
-info "NomadNet systemd service configured."
-
-if "$NOMADNET_BIN" --version >/dev/null 2>&1; then
-  info "NomadNet version: $($NOMADNET_BIN --version 2>/dev/null | head -n1)"
-else
-  warn "Unable to determine NomadNet version."
-fi
-
-
-# === Update the system withe the install of all new packages
-apt-get update -y
-
-sleep 10
-
-
-# === Install Reticulum =========================================================
-info "Installing Reticulum (RNS)."
-
-# === Install RNS
-if "${PIP_INSTALL[@]}" rns; then
-  log "Reticulum installed successfully: $(python3 -m pip show rns 2>/dev/null | grep Version || echo 'unknown version')"
-else
-  error "Reticulum installation failed."
-  exit 1
-fi
-
-# === Check if RNS is installed
-RNSD_PATH=$(command -v rnsd || true)
-if [ -z "$RNSD_PATH" ]; then
-  error "Unable to locate rnsd in PATH after installation."
-  exit 1
-fi
-
-# === Create Reticulum systemd service
-info "Creating Reticulum systemd service."
-
-cat >/etc/systemd/system/rnsd.service <<EOF
-[Unit]
-Description=Reticulum Network Stack Daemon
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=$RNSD_PATH
-Restart=on-failure
-RestartSec=5
-StandardOutput=syslog
-StandardError=syslog
-SyslogIdentifier=rnsd
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# === Enable and start service
-if [ -n "$SYSTEMCTL" ]; then
-  $SYSTEMCTL daemon-reload
-  $SYSTEMCTL enable rnsd.service
-  $SYSTEMCTL restart rnsd.service
-else
-  warn "systemctl not available; please enable rnsd manually."
-fi
-
-info "Reticulum systemd service is set up."
-
-info "==> Version check:"
-if "$RNSD_PATH" --version; then
-  info "rnsd version OK."
-else
-  warn "rnsd version check failed; inspect logs if the service does not start."
-fi
-
-if command_exists rnstatus; then
-  rnstatus --version || true
-  info "Ready. Reticulum runs."
-  info "Configs: $HOME_DIR/.config/reticulum"
-  rnstatus || true
-else
-  warn "rnstatus command not found. Reticulum may need manual verification."
-fi
-
-if [ -n "$SYSTEMCTL" ]; then
-  $SYSTEMCTL --no-pager --full status rnsd || true
-fi
-
-# === Update the system withe the install of all new packages
-apt-get update -y
-
-info "Reticulum (RNS) is installed."
 
 sleep 10
 
@@ -455,11 +305,11 @@ sleep 10
 # === Install Hostapd ============================================================
 info "Installing Hostpad"
 
-# === Settings
+  # === Settings
 SERVICE_FILE="/etc/systemd/system/hostapd.service"
 HOSTAPD_BIN=$(command -v hostapd || echo "/usr/local/bin/hostapd")
 
-# === Clone or update the official repo
+  # === Clone or update the official repo
 install -d -m 0755 /usr/local/src
 HOSTAPD_SRC_DIR=/usr/local/src/hostap
 if [ -d "$HOSTAPD_SRC_DIR" ]; then
@@ -473,7 +323,7 @@ fi
 pushd "$HOSTAPD_SRC_DIR/hostapd" >/dev/null
 cp defconfig .config
 
-# === Build & install
+  # === Build & install
 HOSTAPD_BUILD_JOBS=1
 if command -v nproc >/dev/null 2>&1; then
   HOSTAPD_BUILD_JOBS=$(nproc)
@@ -482,11 +332,11 @@ make -j"$HOSTAPD_BUILD_JOBS"
 make install
 popd >/dev/null
 
-# === Refresh Hostapd binary path
+  # === Refresh Hostapd binary path
 HOSTAPD_BIN=$(command -v hostapd || echo "/usr/local/bin/hostapd")
 info "Hostapd binary found at: $HOSTAPD_BIN"
 
-# === Collect hostapd configuration from user
+  # === Collect hostapd configuration from user
 HOSTAPD_CONFIG_DIR=/etc/hostapd
 HOSTAPD_CONFIG_FILE="$HOSTAPD_CONFIG_DIR/hostapd.conf"
 DEFAULT_SSID="takNode1"
@@ -580,9 +430,10 @@ else
   warn "systemctl not available; enable hostapd manually."
 fi
 
-# === Update the system withe the install of all new packages
+  # === Update the system withe the install of all new packages
 apt-get update -y
 
+  # === Install complete
 info "Hostpad installed"
 
 sleep 10
@@ -646,7 +497,7 @@ $FLASK_GROUP_DIRECTIVE
 WantedBy=multi-user.target
 EOF
 
-# === Manage Flask
+  # === Manage Flask
 if [ -n "$SYSTEMCTL" ]; then
   $SYSTEMCTL daemon-reload
   $SYSTEMCTL enable mesh-flask.service
@@ -658,10 +509,162 @@ else
   warn "systemctl not available; enable mesh-flask.service manually."
 fi
 
-# === Update the system with the install of all new packages
+  # === Update the system with the install of all new packages
 apt-get update -y
 
+  # === Install complete
 info "Flask installation and service configuration complete."
+
+sleep 10
+
+
+# === Install Reticulum =========================================================
+info "Installing Reticulum (RNS)."
+
+  # === Install RNS
+if "${PIP_INSTALL[@]}" rns; then
+  log "Reticulum installed successfully: $(python3 -m pip show rns 2>/dev/null | grep Version || echo 'unknown version')"
+else
+  error "Reticulum installation failed."
+  exit 1
+fi
+
+  # === Check if RNS is installed
+RNSD_PATH=$(command -v rnsd || true)
+if [ -z "$RNSD_PATH" ]; then
+  error "Unable to locate rnsd in PATH after installation."
+  exit 1
+fi
+
+  # === Create Reticulum systemd service
+info "Creating Reticulum systemd service."
+
+cat >/etc/systemd/system/rnsd.service <<EOF
+[Unit]
+Description=Reticulum Network Stack Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$RNSD_PATH
+Restart=on-failure
+RestartSec=5
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=rnsd
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  # === Enable and start service
+if [ -n "$SYSTEMCTL" ]; then
+  $SYSTEMCTL daemon-reload
+  $SYSTEMCTL enable rnsd.service
+  $SYSTEMCTL restart rnsd.service
+else
+  warn "systemctl not available; please enable rnsd manually."
+fi
+
+info "Reticulum systemd service is set up."
+
+info "==> Version check:"
+if "$RNSD_PATH" --version; then
+  info "rnsd version OK."
+else
+  warn "rnsd version check failed; inspect logs if the service does not start."
+fi
+
+if command_exists rnstatus; then
+  rnstatus --version || true
+  info "Ready. Reticulum runs."
+  info "Configs: $HOME_DIR/.config/reticulum"
+  rnstatus || true
+else
+  warn "rnstatus command not found. Reticulum may need manual verification."
+fi
+
+if [ -n "$SYSTEMCTL" ]; then
+  $SYSTEMCTL --no-pager --full status rnsd || true
+fi
+
+  # === Update the system withe the install of all new packages
+apt-get update -y
+
+  # === Install complete
+info "Reticulum (RNS) is installed."
+
+sleep 10
+
+
+# === NomadNet ===============================================================
+info "Installing NomadNet"
+
+  # === Install NomadNet via pip (with fallback to source)
+if "${PIP_INSTALL[@]}" nomadnet; then
+  log "NomadNet installed successfully: $(python3 -m pip show nomadnet 2>/dev/null | grep Version || echo 'unknown version')"
+else
+  error "NomadNet installation failed."
+  exit 1
+fi
+
+  # === Locate the NomadNet executable
+NOMADNET_BIN=$(command -v nomadnet || true)
+if [ -z "$NOMADNET_BIN" ]; then
+  error "Unable to locate nomadnet in PATH after installation."
+  exit 1
+fi
+
+  # === Prepare runtime directories for the target user
+install -d -m 0755 -o "$TARGET_USER" -g "$TARGET_GROUP" "$TARGET_HOME/.local/share/nomadnet" || true
+install -d -m 0755 -o "$TARGET_USER" -g "$TARGET_GROUP" "$TARGET_HOME/.config/nomadnet" || true
+
+  # === Create NomadNet systemd service so it starts on boot
+NOMADNET_SERVICE="/etc/systemd/system/nomadnet.service"
+info "Creating NomadNet systemd service at $NOMADNET_SERVICE."
+
+cat >"$NOMADNET_SERVICE" <<EOF
+[Unit]
+Description=NomadNet Service
+After=network-online.target rnsd.service
+Wants=network-online.target rnsd.service
+
+[Service]
+Type=simple
+User=$TARGET_USER
+Group=$TARGET_GROUP
+Environment=HOME=$TARGET_HOME
+WorkingDirectory=$TARGET_HOME
+ExecStart=$NOMADNET_BIN --serve
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  # === Enable and start NomadNet service
+if [ -n "$SYSTEMCTL" ]; then
+  $SYSTEMCTL daemon-reload
+  $SYSTEMCTL enable nomadnet.service
+  $SYSTEMCTL restart nomadnet.service
+else
+  warn "systemctl not available; please enable nomadnet manually."
+fi
+
+info "NomadNet systemd service configured."
+
+if "$NOMADNET_BIN" --version >/dev/null 2>&1; then
+  info "NomadNet version: $($NOMADNET_BIN --version 2>/dev/null | head -n1)"
+else
+  warn "Unable to determine NomadNet version."
+fi
+
+  # === Update the system withe the install of all new packages
+apt-get update -y
 
 sleep 10
 
@@ -669,7 +672,7 @@ sleep 10
 # === Install TAK Server =========================================================
 info "Installing TAK server - Single server setup"
 
-# === Edit Raspberry OS: Increase JVM threads
+  # === Edit Raspberry OS: Increase JVM threads
 info "Changes in Raspberry OS: Increase JVM threads"
 
 LIMITS_SOFT="*      soft      nofile      32768"
@@ -684,16 +687,16 @@ else
   info "JVM thread limits already configured."
 fi
 
-info "Changes in Raspberry OS are done"
+info "Changes in Increase JVM threads are done"
 
 
-# === Install Java 17 openjdk
+  # === Install Java 17 openjdk
 info "Verifying OpenJDK 17 installation"
 
 REQUIRED_JAVA_MAJOR=17
 JAVA_PACKAGE="openjdk-17-jre"
 
-# Check current Java version (if any)
+    # Check current Java version (if any)
 if command -v java >/dev/null 2>&1; then
   java_version_raw=$(java -version 2>&1 | awk -F '"' '/version/ {print $2}')
   java_major_version=${java_version_raw%%.*}
@@ -703,7 +706,7 @@ else
   java_major_version=0
 fi
 
-# Install OpenJDK 17 if not already present or wrong version
+    # Install OpenJDK 17 if not already present or wrong version
 if [ "$java_major_version" -ne "$REQUIRED_JAVA_MAJOR" ] || ! dpkg -s "$JAVA_PACKAGE" >/dev/null 2>&1; then
   log "Installing ${JAVA_PACKAGE}..."
   apt-get install -y "$JAVA_PACKAGE"
@@ -711,13 +714,14 @@ else
   info "OpenJDK 17 is already installed."
 fi
 
-# === Update the system withe the install of all new packages
+    # Update the system withe the install of all new packages
 apt-get update -y
 
+    # Install complete
 info "Java 17 OpenJDK step is complete"
 
 
-# === Install PostgreSQL 15 and PostGIS
+  # === Install PostgreSQL 15 and PostGIS
 info "Installing PostgreSQL 15 and PostGIS"
 
 POSTGRES_VERSION=15
@@ -793,13 +797,14 @@ else
   warn "PostGIS extension package is not installed."
 fi
 
-# === Update the system withe the install of all new packages
+    # Update the system withe the install of all new packages
 apt-get update -y
 
+    # Install complete
 info "PostgreSQL installation step complete."
 
 
-# === Install TAK server
+  # === Install TAK server
 info "Installing TAK Server"
 
 apt-get install -y ./takserver_5.0-RELEASE29_all.deb
@@ -807,8 +812,11 @@ apt-get install -y ./takserver_5.0-RELEASE29_all.deb
 info "TAK server is installed"
 info "For configuration follow the guide at https://mytecknet.com/lets-build-a-tak-server/."
 
-# === Update the system withe the install of all new packages
+    # Update the system withe the install of all new packages
 apt-get update -y
+
+    # Install complete
+echo "TAK server fully installed"
 
 sleep 10
 
@@ -816,11 +824,11 @@ sleep 10
 #=== Install MediaMTX ============================================================
 info "Installing MediaMTX."
 
-# Create directory for MediaMTX
+  # === Create directory for MediaMTX
 install -d -m 0755 /opt/mediamtx
 cd /opt/mediamtx
 
-# Determine archive matching architecture
+  # === Determine archive matching architecture
 ARCH=$(dpkg --print-architecture)
 case "$ARCH" in
   armhf)
@@ -837,7 +845,7 @@ esac
 
 MEDIAMTX_URL="https://github.com/bluenviron/mediamtx/releases/latest/download/${MEDIAMTX_ARCHIVE}"
 
-# Download latest release from GitHub
+  # === Download latest release from GitHub
 if command_exists curl; then
   curl -fsSL -o mediamtx.tar.gz "$MEDIAMTX_URL"
 elif command_exists wget; then
@@ -847,11 +855,11 @@ else
   exit 1
 fi
 
-# Extract and install
+  # === Extract and install
 tar -xzf mediamtx.tar.gz --strip-components=1
 rm -f mediamtx.tar.gz
 
-# Verify installation
+  # === Verify installation
 if [ ! -x /opt/mediamtx/mediamtx ]; then
   error "MediaMTX binary not found after extraction."
   exit 1
@@ -862,7 +870,7 @@ if [ ! -f /opt/mediamtx/mediamtx.yml ]; then
   warn "MediaMTX configuration file (mediamtx.yml) not found; using built-in defaults."
 fi
 
-# Systemd service for MediaMTX
+  # === Systemd service for MediaMTX
 info "Creating MediaMTX systemd service."
 
 cat >/etc/systemd/system/mediamtx.service <<'EOF'
@@ -883,7 +891,7 @@ SyslogIdentifier=mediamtx
 WantedBy=multi-user.target
 EOF
 
-# Enable and start the service
+  # === Enable and start the service
 if [ -n "$SYSTEMCTL" ]; then
   $SYSTEMCTL daemon-reload
   $SYSTEMCTL enable mediamtx.service
@@ -903,33 +911,32 @@ sleep 10
 # === UFW firewall install ================================================================
 info "Installing and setting up UFW (all connections open for now)"
 
-# === Ensure latest package lists and install/upgrade UFW
-apt-get update -y
+  # === Ensure latest package lists and install/upgrade UFW
 apt-get install -y --no-install-recommends ufw
 apt-get install -y --only-upgrade ufw || true  # if already latest, this no-ops
 
 info "UFW version: $(ufw --version | head -n1 || echo 'unknown')"
 
-# === Optional: enable IPv6 (so rules apply to v6 too when we harden later)
+  # === Optional: enable IPv6 (so rules apply to v6 too when we harden later)
 if grep -q '^IPV6=no' /etc/default/ufw 2>/dev/null; then
   sed -i 's/^IPV6=no/IPV6=yes/' /etc/default/ufw
   info "Enabled IPv6 in /etc/default/ufw"
 fi
 
-# === Start from a clean state
+  # === Start from a clean state
 ufw --force reset
 
-# === Open everything (yes, really)
+  # === Open everything (yes, really)
 ufw default allow incoming
 ufw default allow outgoing
 
-# === Keep logs quiet while it's wide open
+  # === Keep logs quiet while it's wide open
 ufw logging off
 
-# === Enable UFW (with allow-all defaults, this is effectively no firewalling)
+  # === Enable UFW (with allow-all defaults, this is effectively no firewalling)
 ufw --force enable
 
-# === Update the system withe the install of all new packages
+  # === Update the system withe the install of all new packages
 apt-get update -y
 
 info "UFW is enabled with ALL traffic allowed (incoming & outgoing)."
