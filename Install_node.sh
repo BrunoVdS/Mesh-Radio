@@ -168,6 +168,7 @@ PACKAGES=(
   pkg-config
   git
   gnupg
+  curl
 )
 
 info "Package install starting."
