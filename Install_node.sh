@@ -16,8 +16,8 @@ set -Eeuo pipefail
 trap 'error "Unexpected error on line $LINENO"; exit 1' ERR
 
   # === Forcing apt/dpkg to run without prompting for user input, letting the script perform package operations unattended
-DEBIAN_FRONTEND=noninteractive
-export DEBIAN_FRONTEND
+#DEBIAN_FRONTEND=noninteractive
+#export DEBIAN_FRONTEND
 
   # === LOGFILE - variables
     # Log file location
