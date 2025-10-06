@@ -169,6 +169,7 @@ PACKAGES=(
   git
   gnupg
   curl
+  wget
 )
 
 info "Package install starting."
