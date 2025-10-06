@@ -264,60 +264,26 @@ sleep 10
 # === Install Batctl =============================================================
 info "Installing Batctl."
 
-  # === First attempt, load the module.
+  # === First attempt, install via APT.
   if apt-cache policy batctl 2>/dev/null | grep -q "Candidate:"; then
     apt-get install -y --no-install-recommends batctl
   else
-    log "Batctl nnot found in APT ; fall back to source code build."
+    log "Batctl not found in APT; falling back to latest source build."
 
+    CURRENT_DIR=$(pwd)
     install -d -m 0755 /usr/local/src
     cd /usr/local/src
 
-  # === If you want to install a specific version: export BATCTL_VERSION=2025.0 (of wat je wilt)
-    if [ -n "${BATCTL_VERSION:-}" ]; then
-      log "Build batctl verion: ${BATCTL_VERSION}"
-
-    # First try the release-tarball. Fallback to git.
-      if command -v curl >/dev/null 2>&1; then
-        TAR="batctl-${BATCTL_VERSION}.tar.gz"
-        URL="https://downloads.open-mesh.org/batman/releases/${TAR}"
-        if curl -fsSLO "$URL"; then
-          tar xf "$TAR"
-          cd "batctl-${BATCTL_VERSION}"
-          make && make install
-        else
-          log "Release-tarball nor found, fall back to git tag."
-          if [ -d batctl ]; then
-            cd batctl && git fetch --tags && git checkout "v${BATCTL_VERSION}" && git pull --ff-only
-          else
-            git clone https://git.open-mesh.org/batctl.git
-            cd batctl && git fetch --tags && git checkout "v${BATCTL_VERSION}"
-          fi
-          make && make install
-        fi
-      else
-
-  # No curl? Continu over git tag.
-        if [ -d batctl ]; then
-          cd batctl && git fetch --tags && git checkout "v${BATCTL_VERSION}" && git pull --ff-only
-        else
-          git clone https://git.open-mesh.org/batctl.git
-          cd batctl && git fetch --tags && git checkout "v${BATCTL_VERSION}"
-        fi
-        make && make install
-      fi
+    if [[ -d batctl ]]; then
+      cd batctl
+      git pull --ff-only
     else
-
-  # === Build HEAD (fastest fallback)
-      if [[ -d batctl ]]; then
-        cd batctl
-        git pull --ff-only
-      else
-        git clone https://git.open-mesh.org/batctl.git
-        cd batctl
-      fi
-      make && make install
+      git clone https://git.open-mesh.org/batctl.git
+      cd batctl
     fi
+
+    make && make install
+    cd "$CURRENT_DIR"
   fi
 
 # === Verify installation
