@@ -807,18 +807,18 @@ info "PostgreSQL installation step complete."
 
 
   # === Install TAK server
-info "Installing TAK Server"
+#info "Installing TAK Server"
 
-apt-get install -y ./takserver_5.0-RELEASE29_all.deb
+#apt-get install -y ./takserver_5.0-RELEASE29_all.deb
 
-info "TAK server is installed"
-info "For configuration follow the guide at https://mytecknet.com/lets-build-a-tak-server/."
+#info "TAK server is installed"
+#info "For configuration follow the guide at https://mytecknet.com/lets-build-a-tak-server/."
 
     # Update the system withe the install of all new packages
-apt-get update -y
+#apt-get update -y
 
     # Install complete
-echo "TAK server fully installed"
+#echo "TAK server fully installed"
 
 sleep 10
 
