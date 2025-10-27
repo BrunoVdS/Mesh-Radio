@@ -287,6 +287,24 @@ log_service_status() {
   done
 }
 
+  # === Determine account that should own runtime services
+resolve_service_account() {
+  local candidate
+  candidate=${1:-${SUDO_USER:-root}}
+
+  if ! getent passwd "$candidate" >/dev/null 2>&1; then
+    candidate=root
+  fi
+
+  SERVICE_ACCOUNT_USER="$candidate"
+  SERVICE_ACCOUNT_GROUP=$(id -gn "$candidate" 2>/dev/null || echo "$candidate")
+  SERVICE_ACCOUNT_HOME=$(getent passwd "$candidate" | cut -d: -f6)
+
+  if [ -z "$SERVICE_ACCOUNT_HOME" ] || [ ! -d "$SERVICE_ACCOUNT_HOME" ]; then
+    SERVICE_ACCOUNT_HOME="/root"
+  fi
+}
+
   # === Summary of the OS
 log_installation_summary() {
   local os_name kernel_version
@@ -303,7 +321,7 @@ log_installation_summary() {
     info "batctl detailed version: $(batctl -v | head -n1)"
   fi
 
-  log_service_status mesh
+  log_service_status mesh rnsd reticulum-meshchat
 }
 
   # === Check if the logfile exists
@@ -342,6 +360,11 @@ gather_configuration() {
   : "${BANDWIDTH:=HT20}"
   : "${MTU:=1532}"
   : "${BSSID:=02:12:34:56:78:9A}"
+  : "${RNS_USB_PATH:=/dev/ttyACM0}"
+  : "${RNS_FREQUENCY:=867.200}"
+  : "${RNS_BANDWIDTH:=125000}"
+  : "${RNS_SPREADING_FACTOR:=9}"
+  : "${RNS_CODING_RATE:=5}"
 
   if [ $interactive -eq 1 ]; then
     info "Gathering mesh configuration."
@@ -354,6 +377,12 @@ gather_configuration() {
     ask "Bandwidth" "$BANDWIDTH" BANDWIDTH
     ask "MTU for ${BATIF}" "$MTU" MTU
     ask "IBSS fallback BSSID" "$BSSID" BSSID
+    info "Gathering Reticulum configuration."
+    ask "RNode USB device path" "$RNS_USB_PATH" RNS_USB_PATH
+    ask "RNode frequency (MHz)" "$RNS_FREQUENCY" RNS_FREQUENCY
+    ask "RNode bandwidth (Hz)" "$RNS_BANDWIDTH" RNS_BANDWIDTH
+    ask "RNode spreading factor" "$RNS_SPREADING_FACTOR" RNS_SPREADING_FACTOR
+    ask "RNode coding rate" "$RNS_CODING_RATE" RNS_CODING_RATE
   else
     info "Running in unattended mode; using configuration defaults for mesh."
   fi
@@ -375,6 +404,11 @@ FREQ="$FREQ"
 BANDWIDTH="$BANDWIDTH"
 MTU="$MTU"
 BSSID="$BSSID"
+RNS_USB_PATH="$RNS_USB_PATH"
+RNS_FREQUENCY="$RNS_FREQUENCY"
+RNS_BANDWIDTH="$RNS_BANDWIDTH"
+RNS_SPREADING_FACTOR="$RNS_SPREADING_FACTOR"
+RNS_CODING_RATE="$RNS_CODING_RATE"
 EOF
 }
 
@@ -395,6 +429,9 @@ install_packages() {
     python3-cryptography
     python3-serial
     git
+    curl
+    gnupg
+    ca-certificates
   )
 
   info "Starting package installation."
@@ -418,6 +455,217 @@ install_packages() {
     done
   fi
   info "Package installation complete."
+}
+
+install_reticulum_services() {
+  info "Applying Reticulum installation and configuration."
+
+  if ! python3 -m pip install --upgrade --break-system-packages rns; then
+    die "Failed to install Reticulum (pip install rns)."
+  fi
+
+  if ! python3 -m pip show rns >/dev/null 2>&1; then
+    die "Reticulum installation could not be verified."
+  fi
+
+  local scripts_dir rnsd_exec
+  scripts_dir=$(python3 -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2>/dev/null || true)
+  if [ -n "$scripts_dir" ] && [ -x "$scripts_dir/rnsd" ]; then
+    rnsd_exec="$scripts_dir/rnsd"
+  else
+    rnsd_exec=$(command -v rnsd || true)
+  fi
+
+  if [ -z "$rnsd_exec" ]; then
+    die "Unable to locate rnsd executable after installation."
+  fi
+
+  resolve_service_account
+  local service_user="$SERVICE_ACCOUNT_USER"
+  local service_group="$SERVICE_ACCOUNT_GROUP"
+  local service_home="$SERVICE_ACCOUNT_HOME"
+  local config_path="$service_home/.reticulum"
+
+  install -d -m 0750 -o "$service_user" -g "$service_group" "$config_path"
+
+  cat >"$config_path/config" <<EOF
+[reticulum]
+  enable_transport = Yes
+  share_instance = Yes
+  shared_instance_port = 37428
+  instance_control_port = 37429
+  panic_on_interface_error = No
+
+[logging]
+  loglevel = 4
+
+[interfaces]
+
+  [[TCP Server Interface]]
+    type = TCPServerInterface
+    interface_enabled = True
+    listen_ip = 0.0.0.0
+    listen_port = 4242
+    mode = gw
+
+  [[RNode LoRa Interface]]
+    type = RNodeInterface
+    interface_enabled = True
+    mode = ap
+    port = $RNS_USB_PATH
+    frequency = $RNS_FREQUENCY
+    bandwidth = $RNS_BANDWIDTH
+    txpower = 22
+    spreadingfactor = $RNS_SPREADING_FACTOR
+    codingrate = $RNS_CODING_RATE
+
+    airtime_limit_long = 10
+EOF
+
+  chown "$service_user":"$service_group" "$config_path/config"
+  chmod 0640 "$config_path/config"
+
+  install -m 0644 -o root -g root /dev/null /etc/systemd/system/rnsd.service
+  cat >/etc/systemd/system/rnsd.service <<EOF
+[Unit]
+Description=Reticulum Network Stack Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$service_user
+Group=$service_group
+ExecStartPre=/bin/sleep 30
+ExecStart=$rnsd_exec --service
+Restart=always
+RestartSec=3
+WorkingDirectory=$service_home
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  if [ -n "$SYSTEMCTL" ]; then
+    $SYSTEMCTL daemon-reload
+    $SYSTEMCTL enable rnsd
+    $SYSTEMCTL restart rnsd || warn "Failed to start rnsd.service immediately."
+  else
+    warn "systemctl not available; enable and start rnsd.service manually."
+  fi
+
+  local hostname ip_address
+  hostname=$(hostname)
+  ip_address=$(hostname -I | awk '{print $1}' || true)
+
+  info "Reticulum is installed and configured. Use 'systemctl status rnsd' to review state."
+  info "Reticulum TCP interface reachable at ${hostname} (${ip_address:-unknown}) on port 4242."
+}
+
+install_lxmf_services() {
+  info "Applying LXMF installation."
+
+  if python3 -m pip install --upgrade --break-system-packages lxmf; then
+    if python3 -m pip show lxmf >/dev/null 2>&1; then
+      info "LXMF installation complete."
+    else
+      warn "LXMF installation completed but could not be verified."
+    fi
+  else
+    warn "Failed to install LXMF via pip."
+  fi
+}
+
+install_nomadnetwork_services() {
+  info "Applying Nomad Network installation."
+
+  if python3 -m pip install --upgrade --break-system-packages nomadnet; then
+    info "Nomad Network is installed. Use 'nomadnet' to start the program."
+  else
+    warn "Nomad Network installation failed."
+  fi
+}
+
+install_meshchat_services() {
+  info "Applying MeshChat installation."
+
+  local keyring="/usr/share/keyrings/nodesource.gpg"
+  local repo_file="/etc/apt/sources.list.d/nodesource.list"
+  local node_major=22
+
+  if [ ! -f "$keyring" ]; then
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o "$keyring"
+  fi
+
+  if [ ! -f "$repo_file" ]; then
+    echo "deb [signed-by=$keyring] https://deb.nodesource.com/node_${node_major}.x nodistro main" >"$repo_file"
+  fi
+
+  apt-get update -y
+  apt-get install -y nodejs
+
+  resolve_service_account
+  local service_user="$SERVICE_ACCOUNT_USER"
+  local service_group="$SERVICE_ACCOUNT_GROUP"
+  local service_home="$SERVICE_ACCOUNT_HOME"
+  local meshchat_dir="/opt/reticulum-meshchat"
+
+  if [ ! -d "$meshchat_dir/.git" ]; then
+    rm -rf "$meshchat_dir"
+    if ! git clone https://github.com/liamcottle/reticulum-meshchat "$meshchat_dir"; then
+      die "Failed to clone reticulum-meshchat repository."
+    fi
+  else
+    info "Updating existing reticulum-meshchat repository."
+    if ! git -C "$meshchat_dir" pull --ff-only; then
+      warn "Unable to fast-forward reticulum-meshchat repository; leaving existing checkout."
+    fi
+  fi
+
+  chown -R "$service_user":"$service_group" "$meshchat_dir"
+
+  if ! runuser -u "$service_user" -- python3 -m pip install --user --upgrade -r "$meshchat_dir/requirements.txt"; then
+    warn "Failed to install MeshChat Python dependencies."
+  fi
+
+  if runuser -u "$service_user" -- bash -c "cd '$meshchat_dir' && npm install --omit=dev"; then
+    if ! runuser -u "$service_user" -- bash -c "cd '$meshchat_dir' && npm run build-frontend"; then
+      warn "MeshChat frontend build failed."
+    fi
+  else
+    warn "npm install for MeshChat failed."
+  fi
+
+  install -m 0644 -o root -g root /dev/null /etc/systemd/system/reticulum-meshchat.service
+  cat >/etc/systemd/system/reticulum-meshchat.service <<EOF
+[Unit]
+Description=Reticulum MeshChat
+After=network.target rnsd.service
+Wants=network.target rnsd.service
+
+[Service]
+Type=simple
+User=$service_user
+Group=$service_group
+WorkingDirectory=$meshchat_dir
+Environment=PATH=/usr/bin:/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/sbin:$service_home/.local/bin
+ExecStart=/usr/bin/env python3 $meshchat_dir/meshchat.py --headless --host 0.0.0.0
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  if [ -n "$SYSTEMCTL" ]; then
+    $SYSTEMCTL daemon-reload
+    $SYSTEMCTL enable reticulum-meshchat
+    $SYSTEMCTL restart reticulum-meshchat || warn "Failed to start reticulum-meshchat.service immediately."
+  else
+    warn "systemctl not available; enable and start reticulum-meshchat.service manually."
+  fi
+
+  info "MeshChat installation complete. Use 'systemctl status reticulum-meshchat.service' to review state."
 }
 
   # === Installation and starts a BATMAN-adv mesh-netwerk
@@ -574,6 +822,10 @@ main() {
   update_system
   install_packages
   setup_mesh_services
+  install_reticulum_services
+  install_lxmf_services
+  install_nomadnetwork_services
+  install_meshchat_services
   configure_log_rotation
   apt-get autoremove -y
   apt-get clean
