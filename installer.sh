@@ -596,7 +596,13 @@ install_meshchat_services() {
 
   chown -R "$service_user":"$service_group" "$meshchat_dir"
 
-  if ! runuser -u "$service_user" -- python3 -m pip install --user --upgrade -r "$meshchat_dir/requirements.txt"; then
+  local -a meshchat_pip_args=(python3 -m pip install --user --upgrade)
+  if python3 -m pip help install 2>/dev/null | grep -q -- '--break-system-packages'; then
+    meshchat_pip_args+=(--break-system-packages)
+  fi
+  meshchat_pip_args+=('aiohttp>=3.12.14' 'cx_freeze>=7.0.0' 'peewee>=3.18.1' 'websockets>=14.2')
+
+  if ! runuser -u "$service_user" -- "${meshchat_pip_args[@]}"; then
     warn "Failed to install MeshChat Python dependencies."
   fi
 
