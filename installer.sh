@@ -360,11 +360,6 @@ gather_configuration() {
   : "${BANDWIDTH:=HT20}"
   : "${MTU:=1532}"
   : "${BSSID:=02:12:34:56:78:9A}"
-  : "${RNS_USB_PATH:=/dev/ttyACM0}"
-  : "${RNS_FREQUENCY:=867.200}"
-  : "${RNS_BANDWIDTH:=125000}"
-  : "${RNS_SPREADING_FACTOR:=9}"
-  : "${RNS_CODING_RATE:=5}"
 
   if [ $interactive -eq 1 ]; then
     info "Gathering mesh configuration."
@@ -377,12 +372,6 @@ gather_configuration() {
     ask "Bandwidth" "$BANDWIDTH" BANDWIDTH
     ask "MTU for ${BATIF}" "$MTU" MTU
     ask "IBSS fallback BSSID" "$BSSID" BSSID
-    info "Gathering Reticulum configuration."
-    ask "RNode USB device path" "$RNS_USB_PATH" RNS_USB_PATH
-    ask "RNode frequency (MHz)" "$RNS_FREQUENCY" RNS_FREQUENCY
-    ask "RNode bandwidth (Hz)" "$RNS_BANDWIDTH" RNS_BANDWIDTH
-    ask "RNode spreading factor" "$RNS_SPREADING_FACTOR" RNS_SPREADING_FACTOR
-    ask "RNode coding rate" "$RNS_CODING_RATE" RNS_CODING_RATE
   else
     info "Running in unattended mode; using configuration defaults for mesh."
   fi
@@ -404,11 +393,6 @@ FREQ="$FREQ"
 BANDWIDTH="$BANDWIDTH"
 MTU="$MTU"
 BSSID="$BSSID"
-RNS_USB_PATH="$RNS_USB_PATH"
-RNS_FREQUENCY="$RNS_FREQUENCY"
-RNS_BANDWIDTH="$RNS_BANDWIDTH"
-RNS_SPREADING_FACTOR="$RNS_SPREADING_FACTOR"
-RNS_CODING_RATE="$RNS_CODING_RATE"
 EOF
 }
 
@@ -508,18 +492,6 @@ install_reticulum_services() {
     listen_port = 4242
     mode = gw
 
-  [[RNode LoRa Interface]]
-    type = RNodeInterface
-    interface_enabled = True
-    mode = ap
-    port = $RNS_USB_PATH
-    frequency = $RNS_FREQUENCY
-    bandwidth = $RNS_BANDWIDTH
-    txpower = 22
-    spreadingfactor = $RNS_SPREADING_FACTOR
-    codingrate = $RNS_CODING_RATE
-
-    airtime_limit_long = 10
 EOF
 
   chown "$service_user":"$service_group" "$config_path/config"
