@@ -254,6 +254,49 @@ validate_ipv4_cidr() {
   return 0
 }
 
+ensure_network_manager_ready() {
+  if ! command_exists nmcli; then
+    warn "NetworkManager (nmcli) is required for access point setup."
+    return 1
+  fi
+
+  if [ -n "$SYSTEMCTL" ] && "$SYSTEMCTL" list-unit-files NetworkManager.service >/dev/null 2>&1; then
+    "$SYSTEMCTL" enable NetworkManager >/dev/null 2>&1 || true
+    if ! "$SYSTEMCTL" is-active NetworkManager >/dev/null 2>&1; then
+      "$SYSTEMCTL" start NetworkManager >/dev/null 2>&1 || return 1
+    fi
+  fi
+
+  return 0
+}
+
+wait_for_wlan_network_details() {
+  local attempt ip_cidr route_subnet
+
+  WLAN_IP=""
+  AP_SUBNET=""
+
+  for attempt in $(seq 1 20); do
+    ip_cidr=$(ip -o -4 addr show dev wlan0 | awk '{print $4}' | head -n1)
+    if [ -n "$ip_cidr" ]; then
+      WLAN_IP="${ip_cidr%%/*}"
+      AP_SUBNET="$ip_cidr"
+      route_subnet=$(ip -4 route show dev wlan0 | awk '/proto kernel/ {print $1; exit}')
+      if [ -n "$route_subnet" ]; then
+        AP_SUBNET="$route_subnet"
+      fi
+      return 0
+    fi
+    sleep 1
+  done
+
+  if [ -z "$AP_SUBNET" ] && [ -n "${AP_IP_CIDR:-}" ]; then
+    AP_SUBNET="$AP_IP_CIDR"
+  fi
+
+  return 1
+}
+
   # === Check if certain programs are installed helper
 log_apt_package_versions() {
   local pkg version status
@@ -360,6 +403,11 @@ gather_configuration() {
   : "${BANDWIDTH:=HT20}"
   : "${MTU:=1532}"
   : "${BSSID:=02:12:34:56:78:9A}"
+  : "${AP_SSID:=Node2}"
+  : "${AP_PSK:=SuperSecret123}"
+  : "${AP_CHANNEL:=6}"
+  : "${AP_COUNTRY:=BE}"
+  : "${AP_IP_CIDR:=10.42.10.1/24}"
 
   if [ $interactive -eq 1 ]; then
     info "Gathering mesh configuration."
@@ -372,12 +420,22 @@ gather_configuration() {
     ask "Bandwidth" "$BANDWIDTH" BANDWIDTH
     ask "MTU for ${BATIF}" "$MTU" MTU
     ask "IBSS fallback BSSID" "$BSSID" BSSID
+    info "Gathering access point configuration."
+    ask "Access point SSID" "$AP_SSID" AP_SSID
+    ask_hidden "Access point WPA2 password" "$AP_PSK" AP_PSK
+    ask "Access point channel" "$AP_CHANNEL" AP_CHANNEL
+    ask "Access point country code" "$AP_COUNTRY" AP_COUNTRY
+    ask "Access point IP/CIDR" "$AP_IP_CIDR" AP_IP_CIDR
   else
     info "Running in unattended mode; using configuration defaults for mesh."
   fi
 
   if ! validate_ipv4_cidr "$IP_CIDR"; then
     die "Mesh IP/CIDR '$IP_CIDR' is invalid. Update $CONFIG_FILE or rerun interactively."
+  fi
+
+  if ! validate_ipv4_cidr "$AP_IP_CIDR"; then
+    die "Access point IP/CIDR '$AP_IP_CIDR' is invalid. Update $CONFIG_FILE or rerun interactively."
   fi
 
   INTERACTIVE_MODE=$interactive
@@ -393,6 +451,11 @@ FREQ="$FREQ"
 BANDWIDTH="$BANDWIDTH"
 MTU="$MTU"
 BSSID="$BSSID"
+AP_SSID="$AP_SSID"
+AP_PSK="$AP_PSK"
+AP_CHANNEL="$AP_CHANNEL"
+AP_COUNTRY="$AP_COUNTRY"
+AP_IP_CIDR="$AP_IP_CIDR"
 EOF
 }
 
@@ -416,6 +479,10 @@ install_packages() {
     curl
     gnupg
     ca-certificates
+    network-manager
+    nginx
+    php-fpm
+    php-cli
   )
 
   info "Starting package installation."
@@ -439,6 +506,281 @@ install_packages() {
     done
   fi
   info "Package installation complete."
+}
+
+install_access_point() {
+  info "Installing access point on wlan0 (AP)."
+
+  if [ $INTERACTIVE_MODE -eq 1 ]; then
+    echo
+    echo "Summary:"
+    echo "  SSID        : $AP_SSID"
+    echo "  WPA2 PSK    : (hidden for security)"
+    echo "  Channel     : $AP_CHANNEL"
+    echo "  IPv4/CIDR   : $AP_IP_CIDR"
+    echo "  Country code: $AP_COUNTRY"
+    echo
+  fi
+
+  local clean=true
+  if [ $INTERACTIVE_MODE -eq 1 ]; then
+    confirm "Remove all existing Wi-Fi profiles before continuing?" || clean=false
+    echo
+    confirm "Proceed with access point configuration?" || die "Operation cancelled by user."
+  fi
+
+  if ! ensure_network_manager_ready; then
+    die "Access point setup requires NetworkManager (nmcli). Please install and enable 'network-manager' before rerunning."
+  fi
+
+  log "Setting country code to ${AP_COUNTRY}..."
+  if command -v raspi-config >/dev/null 2>&1; then
+    raspi-config nonint do_wifi_country "${AP_COUNTRY}" || true
+  fi
+  iw reg set "${AP_COUNTRY}" || true
+
+  if [[ -f /etc/wpa_supplicant/wpa_supplicant.conf ]]; then
+    grep -q "^country=${AP_COUNTRY}\\b" /etc/wpa_supplicant/wpa_supplicant.conf 2>/dev/null || \
+      sed -i "1i country=${AP_COUNTRY}" /etc/wpa_supplicant/wpa_supplicant.conf || true
+  fi
+
+  log "Reloading Broadcom/CFG80211 drivers..."
+  modprobe -r brcmfmac brcmutil cfg80211 2>/dev/null || true
+  modprobe cfg80211
+  modprobe brcmutil 2>/dev/null || true
+  modprobe brcmfmac 2>/dev/null || true
+
+  log "Enabling Wi-Fi radio and disabling power save..."
+  rfkill unblock all || true
+  nmcli radio wifi on
+  mkdir -p /etc/NetworkManager/conf.d
+  cat >/etc/NetworkManager/conf.d/wifi-powersave-off.conf <<'EOF'
+[connection]
+wifi.powersave=2
+EOF
+
+  log "Restarting NetworkManager..."
+  if [ -n "$SYSTEMCTL" ]; then
+    "$SYSTEMCTL" restart NetworkManager
+  else
+    warn "systemctl not available; please restart NetworkManager manually if required."
+  fi
+  sleep 2
+
+  if $clean; then
+    log "Removing existing Wi-Fi profiles..."
+    nmcli device disconnect wlan0 || true
+    while read -r NAME; do
+      [[ -n "$NAME" ]] && nmcli connection delete "$NAME" || true
+    done < <(nmcli -t -f NAME,TYPE connection show | awk -F: '$2=="802-11-wireless"{print $1}')
+  else
+    log "Leaving existing profiles in place; disconnecting wlan0 regardless."
+    nmcli device disconnect wlan0 || true
+  fi
+
+  log "Creating AP profile: SSID='${AP_SSID}', channel=${AP_CHANNEL}, WPA2..."
+  nmcli -t -f NAME connection show | grep -Fxq "$AP_SSID" && nmcli connection delete "$AP_SSID" || true
+  nmcli connection add type wifi ifname wlan0 con-name "${AP_SSID}" ssid "${AP_SSID}"
+
+  nmcli connection modify "${AP_SSID}" \
+    802-11-wireless.mode ap \
+    802-11-wireless.band bg \
+    802-11-wireless.channel "${AP_CHANNEL}" \
+    802-11-wireless.hidden no \
+    ipv4.method shared \
+    ipv6.method ignore \
+    wifi-sec.key-mgmt wpa-psk \
+    wifi-sec.psk "${AP_PSK}" \
+    connection.autoconnect yes \
+    wifi.cloned-mac-address permanent
+
+  if [ -n "${AP_IP_CIDR:-}" ]; then
+    nmcli connection modify "${AP_SSID}" ipv4.addresses "${AP_IP_CIDR}"
+    local ap_ip_addr="${AP_IP_CIDR%%/*}"
+    if [ -n "$ap_ip_addr" ]; then
+      nmcli connection modify "${AP_SSID}" ipv4.gateway "$ap_ip_addr"
+    fi
+  fi
+
+  nmcli connection modify "${AP_SSID}" 802-11-wireless.channel-width 20mhz 2>/dev/null || \
+  nmcli connection modify "${AP_SSID}" 802-11-wireless.channel-width ht20 2>/dev/null || true
+
+  nmcli connection modify "${AP_SSID}" +wifi-sec.proto rsn       || true
+  nmcli connection modify "${AP_SSID}" +wifi-sec.group ccmp      || true
+  nmcli connection modify "${AP_SSID}" +wifi-sec.pairwise ccmp   || true
+  nmcli connection modify "${AP_SSID}" 802-11-wireless-security.pmf 0 2>/dev/null || \
+  nmcli connection modify "${AP_SSID}" wifi-sec.pmf 0 2>/dev/null || true
+
+  start_ap() {
+    local ch="$1"
+    log "Starting AP on channel ${ch}..."
+    nmcli connection modify "${AP_SSID}" 802-11-wireless.channel "${ch}" || true
+    nmcli connection up "${AP_SSID}"
+  }
+
+  set +e
+  start_ap "${AP_CHANNEL}"
+  local rc=$?
+  if [ $rc -ne 0 ]; then
+    log "Start failed. Attempting fallback on channels 1/6/11..."
+    for ch in 1 6 11; do
+      [[ "$ch" == "$AP_CHANNEL" ]] && continue
+      start_ap "$ch"; rc=$?
+      [ $rc -eq 0 ] && { AP_CHANNEL="$ch"; break; }
+    done
+  fi
+  set -e
+
+  if ! wait_for_wlan_network_details; then
+    die "Unable to detect wlan0 IPv4 details after waiting for NetworkManager. Access point setup cannot continue."
+  fi
+  AP_SUBNET="${AP_SUBNET:-$AP_IP_CIDR}"
+
+  echo
+  nmcli -f DEVICE,TYPE,STATE,CONNECTION device status | sed 's/^/    /'
+  echo
+
+  if nmcli -t -f GENERAL.STATE connection show "${AP_SSID}" >/dev/null 2>&1; then
+    echo "[OK] Completed. SSID: ${AP_SSID}"
+    echo "   WPA2 password: (still hidden for security)"
+    echo "   Channel: ${AP_CHANNEL}"
+    echo "   Device IP on wlan0: ${WLAN_IP:-(no IPv4 address detected yet)}"
+    echo
+    echo "Helpful commands:"
+    echo "  - Change channel: nmcli con mod \"${AP_SSID}\" 802-11-wireless.channel 1 && nmcli con up \"${AP_SSID}\""
+    echo "  - Update SSID   : nmcli con mod \"${AP_SSID}\" 802-11-wireless.ssid \"NewSSID\" && nmcli con up \"${AP_SSID}\""
+    echo "  - Update password: nmcli con mod \"${AP_SSID}\" wifi-sec.psk \"NewPassword\" && nmcli con up \"${AP_SSID}\""
+  else
+    die "Access point is not active. Check logs:\n  - journalctl -u NetworkManager -b --no-pager | tail -n 200\n  - dmesg | grep -i -E 'brcm|wlan0|cfg80211|ieee80211' | tail -n 200"
+  fi
+
+  info "Access point installed."
+}
+
+install_web_server() {
+  info "Installing web server."
+
+  if [ -z "${WLAN_IP:-}" ] || [ -z "${AP_SUBNET:-}" ]; then
+    wait_for_wlan_network_details || true
+  fi
+
+  log "Detected wlan0 IPv4 address ${WLAN_IP:-unknown} on subnet ${AP_SUBNET:-unknown}."
+
+  local script_dir web_root files_dir site_avail site_enabled default_site owner_user php_fpm_service php_fpm_socket assets_dir
+
+  script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  web_root="/var/www/server"
+  files_dir="$web_root/files"
+  site_avail="/etc/nginx/sites-available/fileserver"
+  site_enabled="/etc/nginx/sites-enabled/fileserver"
+  default_site="/etc/nginx/sites-enabled/default"
+  owner_user="${SUDO_USER:-pi}"
+
+  if ! getent passwd "$owner_user" >/dev/null 2>&1; then
+    owner_user=root
+  fi
+
+  log "Installing packages (nginx)..."
+  info "nginx installation handled with base package setup."
+
+  log "Creating directories and setting permissions..."
+  mkdir -p "$web_root"
+  mkdir -p "$files_dir"
+  chown -R "$owner_user":www-data "$web_root"
+  chmod -R 775 "$files_dir"
+
+  log "Writing Nginx configuration..."
+
+  if [ -n "$SYSTEMCTL" ]; then
+    php_fpm_service=$("$SYSTEMCTL" list-unit-files | awk '/php.*-fpm\.service/ {print $1; exit}' || true)
+  else
+    php_fpm_service=""
+  fi
+
+  if [ -n "$php_fpm_service" ]; then
+    info "Ensuring $php_fpm_service is enabled."
+    "$SYSTEMCTL" enable "$php_fpm_service" >/dev/null 2>&1 || warn "Unable to enable $php_fpm_service."
+    "$SYSTEMCTL" restart "$php_fpm_service" >/dev/null 2>&1 || warn "Unable to restart $php_fpm_service."
+  else
+    warn "No php-fpm service detected; PHP content may not be served until the service is installed."
+  fi
+
+  php_fpm_socket=""
+  if [ -d /run/php ]; then
+    php_fpm_socket=$(find /run/php -maxdepth 1 -type s -name 'php*-fpm.sock' | head -n1 || true)
+  fi
+  if [ -z "$php_fpm_socket" ]; then
+    php_fpm_socket="/run/php/php-fpm.sock"
+    warn "Defaulting to PHP-FPM socket path $php_fpm_socket in Nginx configuration."
+  else
+    info "Using PHP-FPM socket $php_fpm_socket."
+  fi
+
+  cat > "$site_avail" <<'NGINXCONF'
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    server_name _;
+
+    root /var/www/server;
+    index index.php index.html;
+
+    location /files/ {
+        autoindex on;
+        autoindex_exact_size off;
+        autoindex_localtime on;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass FASTCGI_SOCKET;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+}
+NGINXCONF
+
+  sed -i "s|FASTCGI_SOCKET|unix:$php_fpm_socket|" "$site_avail"
+
+  assets_dir="$script_dir/web_assets"
+  if [ -d "$assets_dir" ]; then
+    info "Deploying web assets from $assets_dir to $web_root."
+    cp -a "$assets_dir/." "$web_root/"
+    chown -R "$owner_user":www-data "$web_root"
+    chmod -R 775 "$files_dir"
+  else
+    warn "Web assets directory $assets_dir not found; default site will be empty."
+  fi
+
+  log "Activating site configuration..."
+  ln -sf "$site_avail" "$site_enabled"
+  [ -e "$default_site" ] && rm -f "$default_site"
+
+  log "Testing configuration and restarting Nginx..."
+  nginx -t
+  if [ -n "$SYSTEMCTL" ]; then
+    "$SYSTEMCTL" enable nginx >/dev/null 2>&1 || warn "Unable to enable nginx service."
+    "$SYSTEMCTL" restart nginx || die "Failed to restart nginx after configuration update."
+    if [ -n "$php_fpm_service" ]; then
+      "$SYSTEMCTL" restart "$php_fpm_service" || warn "Failed to restart $php_fpm_service."
+    fi
+  else
+    warn "systemctl not available; please manage nginx and PHP-FPM services manually."
+  fi
+
+  echo
+  echo "[OK] Completed. Place your files in: $files_dir"
+  echo "   HTTP: http://${WLAN_IP:-<wlan0-IP>}/files/  (once wlan0 has an IP)"
+  echo "   AP subnet: ${AP_SUBNET:-unknown} (for reference only)"
+
+  info "Web server installed."
 }
 
 install_reticulum_services() {
@@ -799,6 +1141,8 @@ main() {
   gather_configuration
   update_system
   install_packages
+  install_access_point
+  install_web_server
   setup_mesh_services
   install_reticulum_services
   install_lxmf_services
