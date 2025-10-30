@@ -280,6 +280,94 @@ validate_ipv4_cidr() {
   return 0
 }
 
+validate_ipv4_address() {
+  local ip="$1" o1 o2 o3 o4 octet
+
+  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+
+  IFS=. read -r o1 o2 o3 o4 <<<"$ip"
+
+  for octet in "$o1" "$o2" "$o3" "$o4"; do
+    if ! [[ "$octet" =~ ^[0-9]+$ ]] || [ "$octet" -lt 0 ] || [ "$octet" -gt 255 ]; then
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+ipv4_to_int() {
+  local ip="$1" o1 o2 o3 o4
+  IFS=. read -r o1 o2 o3 o4 <<<"$ip"
+  printf '%u' $(( (o1 << 24) + (o2 << 16) + (o3 << 8) + o4 ))
+}
+
+cidr_network_int() {
+  local cidr="$1" ip prefix mask
+  IFS=/ read -r ip prefix <<<"$cidr"
+  if [ "$prefix" -eq 0 ]; then
+    mask=0
+  else
+    mask=$(( (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF ))
+  fi
+  printf '%u' $(( $(ipv4_to_int "$ip") & mask ))
+}
+
+cidr_hostmask_int() {
+  local cidr="$1" prefix
+  IFS=/ read -r _ prefix <<<"$cidr"
+  if [ "$prefix" -eq 32 ]; then
+    printf '%u' 0
+  elif [ "$prefix" -eq 0 ]; then
+    printf '%u' $((0xFFFFFFFF))
+  else
+    printf '%u' $(( (1 << (32 - prefix)) - 1 ))
+  fi
+}
+
+is_ip_in_cidr() {
+  local ip="$1" cidr="$2" ip_int network hostmask min max
+  ip_int=$(ipv4_to_int "$ip")
+  network=$(cidr_network_int "$cidr")
+  hostmask=$(cidr_hostmask_int "$cidr")
+  min=$network
+  max=$(( network + hostmask ))
+  [ "$ip_int" -ge "$min" ] && [ "$ip_int" -le "$max" ]
+}
+
+ip_in_range() {
+  local ip="$1" start="$2" end="$3"
+  local ip_int start_int end_int
+  ip_int=$(ipv4_to_int "$ip")
+  start_int=$(ipv4_to_int "$start")
+  end_int=$(ipv4_to_int "$end")
+  [ "$ip_int" -ge "$start_int" ] && [ "$ip_int" -le "$end_int" ]
+}
+
+validate_dhcp_range() {
+  local cidr="$1" start="$2" end="$3"
+  local start_int end_int
+
+  if ! validate_ipv4_address "$start" || ! validate_ipv4_address "$end"; then
+    return 1
+  fi
+
+  if ! is_ip_in_cidr "$start" "$cidr" || ! is_ip_in_cidr "$end" "$cidr"; then
+    return 1
+  fi
+
+  start_int=$(ipv4_to_int "$start")
+  end_int=$(ipv4_to_int "$end")
+
+  [ "$start_int" -le "$end_int" ]
+}
+
+validate_wpa_passphrase() {
+  local passphrase="$1" length
+  length=${#passphrase}
+  [ "$length" -ge 8 ] && [ "$length" -le 63 ]
+}
+
 ensure_network_manager_ready() {
   if ! command_exists nmcli; then
     warn "NetworkManager (nmcli) is required for access point setup."
@@ -431,11 +519,15 @@ gather_configuration() {
   : "${BANDWIDTH:=HT20}"
   : "${MTU:=1532}"
   : "${BSSID:=02:12:34:56:78:9A}"
+  : "${AP_INTERFACE:=wlan0}"
   : "${AP_SSID:=Node2}"
   : "${AP_PSK:=SuperSecret123}"
   : "${AP_CHANNEL:=6}"
   : "${AP_COUNTRY:=BE}"
-  : "${AP_IP_CIDR:=10.42.10.1/24}"
+  : "${AP_IP_CIDR:=10.0.0.1/24}"
+  : "${AP_DHCP_RANGE_START:=10.0.0.100}"
+  : "${AP_DHCP_RANGE_END:=10.0.0.200}"
+  : "${AP_DHCP_LEASE:=12h}"
 
   if [ $interactive -eq 1 ]; then
     info "Gathering mesh configuration."
@@ -449,11 +541,15 @@ gather_configuration() {
     ask "MTU for ${BATIF}" "$MTU" MTU
     ask "IBSS fallback BSSID" "$BSSID" BSSID
     info "Gathering access point configuration."
+    ask "Access point interface" "$AP_INTERFACE" AP_INTERFACE
     ask "Access point SSID" "$AP_SSID" AP_SSID
-    ask_hidden "Access point WPA2 password" "$AP_PSK" AP_PSK
+    ask_hidden "Access point WPA2/WPA3 passphrase" "$AP_PSK" AP_PSK
     ask "Access point channel" "$AP_CHANNEL" AP_CHANNEL
     ask "Access point country code" "$AP_COUNTRY" AP_COUNTRY
     ask "Access point IP/CIDR" "$AP_IP_CIDR" AP_IP_CIDR
+    ask "Access point DHCP range start" "$AP_DHCP_RANGE_START" AP_DHCP_RANGE_START
+    ask "Access point DHCP range end" "$AP_DHCP_RANGE_END" AP_DHCP_RANGE_END
+    ask "Access point DHCP lease" "$AP_DHCP_LEASE" AP_DHCP_LEASE
   else
     info "Running in unattended mode; using configuration defaults for mesh."
   fi
@@ -462,8 +558,42 @@ gather_configuration() {
     die "Mesh IP/CIDR '$IP_CIDR' is invalid. Update $CONFIG_FILE or rerun interactively."
   fi
 
+  if [ -z "$AP_INTERFACE" ]; then
+    die "Access point interface cannot be empty."
+  fi
+
+  if ! [[ "$AP_CHANNEL" =~ ^[0-9]+$ ]]; then
+    die "Access point channel '$AP_CHANNEL' must be a numeric value."
+  fi
+
   if ! validate_ipv4_cidr "$AP_IP_CIDR"; then
     die "Access point IP/CIDR '$AP_IP_CIDR' is invalid. Update $CONFIG_FILE or rerun interactively."
+  fi
+
+  AP_IP_ADDRESS="${AP_IP_CIDR%%/*}"
+
+  if ! validate_ipv4_address "$AP_IP_ADDRESS"; then
+    die "Access point IP '$AP_IP_ADDRESS' is invalid."
+  fi
+
+  if ! validate_ipv4_address "$AP_DHCP_RANGE_START"; then
+    die "Access point DHCP range start '$AP_DHCP_RANGE_START' is invalid."
+  fi
+
+  if ! validate_ipv4_address "$AP_DHCP_RANGE_END"; then
+    die "Access point DHCP range end '$AP_DHCP_RANGE_END' is invalid."
+  fi
+
+  if ! validate_wpa_passphrase "$AP_PSK"; then
+    die "Access point passphrase must be between 8 and 63 characters for WPA2 compatibility."
+  fi
+
+  if ! validate_dhcp_range "$AP_IP_CIDR" "$AP_DHCP_RANGE_START" "$AP_DHCP_RANGE_END"; then
+    die "DHCP range $AP_DHCP_RANGE_START - $AP_DHCP_RANGE_END is not valid for subnet $AP_IP_CIDR."
+  fi
+
+  if ip_in_range "$AP_IP_ADDRESS" "$AP_DHCP_RANGE_START" "$AP_DHCP_RANGE_END"; then
+    die "Access point IP '$AP_IP_ADDRESS' overlaps with the DHCP range."
   fi
 
   INTERACTIVE_MODE=$interactive
@@ -479,11 +609,15 @@ FREQ="$FREQ"
 BANDWIDTH="$BANDWIDTH"
 MTU="$MTU"
 BSSID="$BSSID"
+AP_INTERFACE="$AP_INTERFACE"
 AP_SSID="$AP_SSID"
 AP_PSK="$AP_PSK"
 AP_CHANNEL="$AP_CHANNEL"
 AP_COUNTRY="$AP_COUNTRY"
 AP_IP_CIDR="$AP_IP_CIDR"
+AP_DHCP_RANGE_START="$AP_DHCP_RANGE_START"
+AP_DHCP_RANGE_END="$AP_DHCP_RANGE_END"
+AP_DHCP_LEASE="$AP_DHCP_LEASE"
 EOF
 }
 
@@ -492,6 +626,129 @@ update_system() {
   apt-get update -y
   apt-get -o Dpkg::Options::="--force-confdef"           -o Dpkg::Options::="--force-confold"           dist-upgrade -y
   info "Operating system update and upgrade complete."
+}
+
+configure_access_point() {
+  local hw_mode="g" hostapd_conf="/etc/hostapd/hostapd.conf" dnsmasq_conf="/etc/dnsmasq.d/mesh-ap.conf"
+  local default_hostapd="/etc/default/hostapd" ip_setup_script="/usr/local/sbin/mesh-ap-setup"
+  local ip_service="/etc/systemd/system/mesh-ap-ip.service" ap_ip="$AP_IP_ADDRESS"
+
+  if [ "$AP_CHANNEL" -gt 14 ]; then
+    hw_mode="a"
+  fi
+
+  info "Configuring Wi-Fi access point on ${AP_INTERFACE} with static address ${AP_IP_CIDR}."
+
+  install -d -m 0755 /etc/hostapd
+  install -d -m 0755 /etc/dnsmasq.d
+
+  install -m 0640 -o root -g root /dev/null "$hostapd_conf"
+  cat >"$hostapd_conf" <<EOF
+ctrl_interface=/var/run/hostapd
+ctrl_interface_group=0
+interface=$AP_INTERFACE
+driver=nl80211
+ssid=$AP_SSID
+country_code=$AP_COUNTRY
+hw_mode=$hw_mode
+channel=$AP_CHANNEL
+wmm_enabled=1
+ieee80211d=1
+ieee80211h=1
+ieee80211n=1
+ieee80211ac=1
+ieee80211w=2
+sae_require_mfp=1
+sae_pwe=1
+wpa=2
+wpa_key_mgmt=WPA-PSK SAE
+rsn_pairwise=CCMP
+auth_algs=1
+wpa_passphrase=$AP_PSK
+sae_password=$AP_PSK
+beacon_int=100
+ignore_broadcast_ssid=0
+EOF
+
+  install -m 0644 -o root -g root /dev/null "$default_hostapd"
+  cat >"$default_hostapd" <<EOF
+DAEMON_CONF="$hostapd_conf"
+EOF
+
+  if [ -z "$ap_ip" ]; then
+    ap_ip="${AP_IP_CIDR%%/*}"
+  fi
+
+  install -m 0644 -o root -g root /dev/null "$dnsmasq_conf"
+  cat >"$dnsmasq_conf" <<EOF
+interface=$AP_INTERFACE
+bind-interfaces
+dhcp-range=$AP_DHCP_RANGE_START,$AP_DHCP_RANGE_END,$AP_DHCP_LEASE
+dhcp-option=option:router,$ap_ip
+dhcp-option=option:dns-server,$ap_ip
+log-dhcp
+EOF
+
+  install -m 0755 -o root -g root /dev/null "$ip_setup_script"
+  cat >"$ip_setup_script" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG_FILE="/etc/default/mesh.conf"
+
+if [ -r "$CONFIG_FILE" ]; then
+  # shellcheck disable=SC1090
+  . "$CONFIG_FILE"
+fi
+
+interface="${AP_INTERFACE:-wlan0}"
+cidr="${AP_IP_CIDR:-10.0.0.1/24}"
+
+ip_bin="$(command -v ip)"
+
+if [ -z "$ip_bin" ]; then
+  echo "ip command not found" >&2
+  exit 1
+fi
+
+"$ip_bin" link set "$interface" up
+"$ip_bin" address replace "$cidr" dev "$interface"
+EOF
+
+  install -m 0644 -o root -g root /dev/null "$ip_service"
+  cat >"$ip_service" <<EOF
+[Unit]
+Description=Configure Mesh access point interface
+After=network-pre.target
+Before=hostapd.service dnsmasq.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=$ip_setup_script
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  if "$ip_setup_script"; then
+    info "Assigned ${AP_IP_CIDR} to ${AP_INTERFACE}."
+  else
+    warn "Failed to assign ${AP_IP_CIDR} to ${AP_INTERFACE}; check mesh-ap-setup script."
+  fi
+
+  if [ -n "$SYSTEMCTL" ]; then
+    $SYSTEMCTL daemon-reload
+    $SYSTEMCTL unmask hostapd.service >/dev/null 2>&1 || true
+    $SYSTEMCTL unmask dnsmasq.service >/dev/null 2>&1 || true
+    $SYSTEMCTL enable mesh-ap-ip.service hostapd.service dnsmasq.service
+    $SYSTEMCTL restart mesh-ap-ip.service || warn "Failed to trigger mesh-ap-ip.service"
+    $SYSTEMCTL restart hostapd.service || warn "Failed to start hostapd.service"
+    $SYSTEMCTL restart dnsmasq.service || warn "Failed to start dnsmasq.service"
+  else
+    warn "systemctl not available; start hostapd and dnsmasq manually."
+  fi
 }
 
   # === Installation B.A.T.M.A.N.-adv mesh-netwerk (bat0)
@@ -778,6 +1035,7 @@ main() {
   gather_configuration
   update_system
   install_packages
+  configure_access_point
   setup_mesh_services
   install_reticulum_services
   configure_log_rotation
