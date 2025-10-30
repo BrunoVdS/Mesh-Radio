@@ -507,6 +507,9 @@ install_packages() {
     curl
     gnupg
     ca-certificates
+    hostapd
+    dnsmasq
+    nftables
     network-manager
     nginx
     php-fpm
