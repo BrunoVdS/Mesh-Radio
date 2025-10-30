@@ -17,6 +17,7 @@ trap 'echo "[ERROR] Unexpected error on line $LINENO" >&2' ERR
 
 LOGFILE="/var/log/mesh-install.log"
 CONFIG_FILE="/etc/default/mesh.conf"
+CONFIG_FILE_OVERRIDE=0
 SYSTEMCTL=$(command -v systemctl || true)
 UNATTENDED_INSTALL=0
 INSTALL_MODE="attended"
@@ -69,11 +70,12 @@ command_exists() {
 
   # === Defining attended of unattended install helpers
 usage() {
-  cat <<'USAGE'
-Usage: basic_installer.sh [--attended | --unattended]
+  cat <<USAGE
+Usage: basic_installer.sh [--attended | --unattended] [--config PATH]
 
 By default the installer runs in attended (interactive) mode.
 Use --unattended to apply defaults without prompting.
+Use --config PATH to read defaults from PATH (default: $CONFIG_FILE).
 USAGE
 }
 
@@ -87,6 +89,30 @@ parse_cli_args() {
       --unattended)
         INSTALL_MODE="unattended"
         UNATTENDED_INSTALL=1
+        ;;
+      --config)
+        if [ $# -lt 2 ]; then
+          error "Missing value for --config"
+          usage
+          exit 1
+        fi
+        CONFIG_FILE="$2"
+        if [ -z "$CONFIG_FILE" ]; then
+          error "Configuration file path for --config cannot be empty"
+          usage
+          exit 1
+        fi
+        CONFIG_FILE_OVERRIDE=1
+        shift
+        ;;
+      --config=*)
+        CONFIG_FILE="${1#--config=}"
+        if [ -z "$CONFIG_FILE" ]; then
+          error "Configuration file path for --config cannot be empty"
+          usage
+          exit 1
+        fi
+        CONFIG_FILE_OVERRIDE=1
         ;;
       -h|--help)
         usage
@@ -392,6 +418,8 @@ gather_configuration() {
     info "Loading configuration defaults from $CONFIG_FILE"
     # shellcheck disable=SC1091
     . "$CONFIG_FILE"
+  elif [ "$CONFIG_FILE_OVERRIDE" -eq 1 ]; then
+    die "Configuration file '$CONFIG_FILE' does not exist or is not readable."
   fi
 
   : "${MESH_ID:=MESHNODE}"
