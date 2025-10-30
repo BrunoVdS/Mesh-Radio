@@ -11,6 +11,13 @@ execute the script as your regular user and it will prompt for the
 necessary credentials while keeping root access limited to the
 installation process itself.
 
+### Providing custom configuration defaults
+
+The installer reads default values from `/etc/default/mesh.conf`. Use the
+`--config /path/to/file` argument when launching the installer to load a
+different configuration file. An example configuration containing the
+current defaults is available in `mesh-settings.conf.example`.
+
 Configuration script
   The Flask web service configuration has been split out into a dedicated helper
   script. After running `mesh_node.sh` (which now only ensures the Flask package
