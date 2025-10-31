@@ -527,7 +527,7 @@ gather_configuration() {
   : "${MTU:=1532}"
   : "${BSSID:=02:12:34:56:78:9A}"
   : "${AP_INTERFACE:=wlan0}"
-  : "${AP_SSID:=Node2}"
+  : "${AP_SSID:=Node1}"
   : "${AP_PSK:=SuperSecret123}"
   : "${AP_CHANNEL:=6}"
   : "${AP_COUNTRY:=BE}"
