@@ -155,6 +155,16 @@ prompt_read() {
   fi
 }
 
+remove_trailing_carriage_returns() {
+  local var value
+  for var in "$@"; do
+    if [ "${!var+x}" = x ]; then
+      value=${!var//$'\r'/}
+      printf -v "$var" '%s' "$value"
+    fi
+  done
+}
+
   # === Ask the user for input helper
 ask() {
   local prompt="$1"
@@ -511,6 +521,10 @@ gather_configuration() {
     info "Loading configuration defaults from $CONFIG_FILE"
     # shellcheck disable=SC1091
     . "$CONFIG_FILE"
+    remove_trailing_carriage_returns \
+      MESH_ID IFACE BATIF IP_CIDR COUNTRY FREQ BANDWIDTH MTU BSSID \
+      AP_INTERFACE AP_SSID AP_PSK AP_CHANNEL AP_COUNTRY AP_IP_CIDR \
+      AP_DHCP_RANGE_START AP_DHCP_RANGE_END AP_DHCP_LEASE
   elif [ "$CONFIG_FILE_OVERRIDE" -eq 1 ]; then
     die "Configuration file '$CONFIG_FILE' does not exist or is not readable. Provide a valid path with --config or set MESH_CONFIG_PATH."
   else
