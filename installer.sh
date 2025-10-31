@@ -16,9 +16,14 @@ trap 'echo "[ERROR] Unexpected error on line $LINENO" >&2' ERR
 
 # === Variables ====================================================================
 
+SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 LOGFILE="/var/log/mesh-install.log"
-CONFIG_FILE="/etc/default/mesh.conf"
+DEFAULT_CONFIG_FILE="$SCRIPT_DIR/mesh.conf"
+CONFIG_FILE="${MESH_CONFIG_PATH:-$DEFAULT_CONFIG_FILE}"
 CONFIG_FILE_OVERRIDE=0
+if [ -n "${MESH_CONFIG_PATH:-}" ]; then
+  CONFIG_FILE_OVERRIDE=1
+fi
 SYSTEMCTL=$(command -v systemctl || true)
 UNATTENDED_INSTALL=0
 INSTALL_MODE="attended"
@@ -508,7 +513,9 @@ gather_configuration() {
     # shellcheck disable=SC1091
     . "$CONFIG_FILE"
   elif [ "$CONFIG_FILE_OVERRIDE" -eq 1 ]; then
-    die "Configuration file '$CONFIG_FILE' does not exist or is not readable."
+    die "Configuration file '$CONFIG_FILE' does not exist or is not readable. Provide a valid path with --config or set MESH_CONFIG_PATH."
+  else
+    error "Configuration file '$CONFIG_FILE' does not exist or is not readable. Continuing with built-in defaults."
   fi
 
   : "${MESH_ID:=MESHNODE}"
@@ -632,7 +639,7 @@ update_system() {
 configure_access_point() {
   local hw_mode="g" hostapd_conf="/etc/hostapd/hostapd.conf" dnsmasq_conf="/etc/dnsmasq.d/mesh-ap.conf"
   local default_hostapd="/etc/default/hostapd" ip_setup_script="/usr/local/sbin/mesh-ap-setup"
-  local ip_service="/etc/systemd/system/mesh-ap-ip.service" ap_ip="$AP_IP_ADDRESS"
+  local ip_service="/etc/systemd/system/mesh-ap-ip.service" ap_ip="$AP_IP_ADDRESS" escaped_config_path
 
   if [ "$AP_CHANNEL" -gt 14 ]; then
     hw_mode="a"
@@ -695,11 +702,14 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONFIG_FILE="/etc/default/mesh.conf"
+CONFIG_FILE="${MESH_CONFIG_PATH:-__MESH_CONFIG_PATH__}"
 
 if [ -r "$CONFIG_FILE" ]; then
   # shellcheck disable=SC1090
   . "$CONFIG_FILE"
+else
+  echo "Configuration file '$CONFIG_FILE' does not exist or is not readable." >&2
+  exit 1
 fi
 
 interface="${AP_INTERFACE:-wlan0}"
@@ -715,6 +725,9 @@ fi
 "$ip_bin" link set "$interface" up
 "$ip_bin" address replace "$cidr" dev "$interface"
 EOF
+
+  escaped_config_path=$(printf '%s\n' "$CONFIG_FILE" | sed 's/[&]/\\&/g')
+  sed -i "s|__MESH_CONFIG_PATH__|$escaped_config_path|g" "$ip_setup_script"
 
   install -m 0644 -o root -g root /dev/null "$ip_service"
   cat >"$ip_service" <<EOF
@@ -765,7 +778,15 @@ setup_mesh_services() {
 #!/usr/bin/env bash
 set -euo pipefail
 CMD="${1:-status}"
-. /etc/default/mesh.conf
+CONFIG_FILE="${MESH_CONFIG_PATH:-__MESH_CONFIG_PATH__}"
+
+if [ -r "$CONFIG_FILE" ]; then
+  # shellcheck disable=SC1090
+  . "$CONFIG_FILE"
+else
+  echo "Configuration file '$CONFIG_FILE' does not exist or is not readable." >&2
+  exit 1
+fi
 
 mesh_supported() {
   iw list 2>/dev/null | awk '/Supported interface modes/{p=1} p{print} /Supported commands/{exit}' | grep -qi "mesh point"
@@ -818,6 +839,8 @@ case "$CMD" in
   *) echo "Usage: meshctl {up|down|status}"; exit 2;;
 esac
 EOF
+
+  sed -i "s|__MESH_CONFIG_PATH__|$(printf '%s\n' "$CONFIG_FILE" | sed 's/[&]/\\&/g')|g" /usr/local/sbin/meshctl
 
   install -m 0644 -o root -g root /dev/null /etc/systemd/system/mesh.service
   cat >/etc/systemd/system/mesh.service <<'EOF'
