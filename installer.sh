@@ -577,7 +577,8 @@ ensure_networkmanager_unmanages_interfaces() {
     return
   fi
 
-  local nm_conf_dir="/etc/NetworkManager/conf.d" unmanaged_file="$nm_conf_dir/mesh-radio-unmanaged.conf"
+  local nm_conf_dir="/etc/NetworkManager/conf.d"
+  local unmanaged_file="$nm_conf_dir/mesh-radio-unmanaged.conf"
   local -a interfaces=("$IFACE")
   local unmanaged_devices="" nm_iface interface_label=""
 
