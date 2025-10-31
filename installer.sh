@@ -815,7 +815,9 @@ EOF
     $SYSTEMCTL daemon-reload
     $SYSTEMCTL unmask hostapd.service >/dev/null 2>&1 || true
     $SYSTEMCTL unmask dnsmasq.service >/dev/null 2>&1 || true
-    $SYSTEMCTL enable mesh-ap-ip.service hostapd.service dnsmasq.service
+    if ! $SYSTEMCTL enable mesh-ap-ip.service hostapd.service dnsmasq.service; then
+      warn "Failed to enable one or more access point services; verify hostapd/dnsmasq installation."
+    fi
     $SYSTEMCTL restart mesh-ap-ip.service || warn "Failed to trigger mesh-ap-ip.service"
     $SYSTEMCTL restart hostapd.service || warn "Failed to start hostapd.service"
     $SYSTEMCTL restart dnsmasq.service || warn "Failed to start dnsmasq.service"
