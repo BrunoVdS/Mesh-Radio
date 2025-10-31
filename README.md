@@ -27,7 +27,10 @@ Mesh is created on bat0 using wlan1, and we are routing in the access point wlan
 Creating a mesh network called bat0 and adding wlan 1 to the mesh.
 
 ## Access point (wlan0)
-On wlan0 we are creating an access point where other devices (EUD) can connect to the system and the access point is routed in to the mesh.
+Access point for EUD and othe devices to connect to the Raspberry Pi.
+  IP: 10.0.0.1/24
+
+DHCP IP range for devices: 10.0.0.100-200
 
 ## Internet access
 Eth0 is routed in to the mesh and if one node (or more) has internet access on their eth0 hardware the mesh has internet connection.
