@@ -17,12 +17,6 @@ trap 'echo "[ERROR] Unexpected error on line $LINENO" >&2' ERR
 
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 LOGFILE="/var/log/mesh-install.log"
-DEFAULT_CONFIG_FILE="$SCRIPT_DIR/mesh.conf"
-CONFIG_FILE="${MESH_CONFIG_PATH:-$DEFAULT_CONFIG_FILE}"
-CONFIG_FILE_OVERRIDE=0
-if [ -n "${MESH_CONFIG_PATH:-}" ]; then
-  CONFIG_FILE_OVERRIDE=1
-fi
 SYSTEMCTL=$(command -v systemctl || true)
 UNATTENDED_INSTALL=0
 INSTALL_MODE="attended"
@@ -76,11 +70,10 @@ command_exists() {
   # === Defining attended of unattended install helpers
 usage() {
   cat <<USAGE
-Usage: basic_installer.sh [--attended | --unattended] [--config PATH]
+Usage: basic_installer.sh [--attended | --unattended]
 
 By default the installer runs in attended (interactive) mode.
 Use --unattended to apply defaults without prompting.
-Use --config PATH to read defaults from PATH (default: $CONFIG_FILE).
 USAGE
 }
 
@@ -94,30 +87,6 @@ parse_cli_args() {
       --unattended)
         INSTALL_MODE="unattended"
         UNATTENDED_INSTALL=1
-        ;;
-      --config)
-        if [ $# -lt 2 ]; then
-          error "Missing value for --config"
-          usage
-          exit 1
-        fi
-        CONFIG_FILE="$2"
-        if [ -z "$CONFIG_FILE" ]; then
-          error "Configuration file path for --config cannot be empty"
-          usage
-          exit 1
-        fi
-        CONFIG_FILE_OVERRIDE=1
-        shift
-        ;;
-      --config=*)
-        CONFIG_FILE="${1#--config=}"
-        if [ -z "$CONFIG_FILE" ]; then
-          error "Configuration file path for --config cannot be empty"
-          usage
-          exit 1
-        fi
-        CONFIG_FILE_OVERRIDE=1
         ;;
       -h|--help)
         usage
@@ -153,16 +122,6 @@ prompt_read() {
   else
     IFS= read "${args[@]}"
   fi
-}
-
-remove_trailing_carriage_returns() {
-  local var value
-  for var in "$@"; do
-    if [ "${!var+x}" = x ]; then
-      value=${!var//$'\r'/}
-      printf -v "$var" '%s' "$value"
-    fi
-  done
 }
 
   # === Ask the user for input helper
@@ -517,20 +476,6 @@ gather_configuration() {
     interactive=0
   fi
 
-  if [ -r "$CONFIG_FILE" ]; then
-    info "Loading configuration defaults from $CONFIG_FILE"
-    # shellcheck disable=SC1091
-    . "$CONFIG_FILE"
-    remove_trailing_carriage_returns \
-      MESH_ID IFACE BATIF IP_CIDR COUNTRY FREQ BANDWIDTH MTU BSSID \
-      AP_INTERFACE AP_SSID AP_PSK AP_CHANNEL AP_COUNTRY AP_IP_CIDR \
-      AP_DHCP_RANGE_START AP_DHCP_RANGE_END AP_DHCP_LEASE
-  elif [ "$CONFIG_FILE_OVERRIDE" -eq 1 ]; then
-    die "Configuration file '$CONFIG_FILE' does not exist or is not readable. Provide a valid path with --config or set MESH_CONFIG_PATH."
-  else
-    error "Configuration file '$CONFIG_FILE' does not exist or is not readable. Continuing with built-in defaults."
-  fi
-
   : "${MESH_ID:=MESHNODE}"
   : "${IFACE:=wlan1}"
   : "${BATIF:=bat0}"
@@ -576,7 +521,7 @@ gather_configuration() {
   fi
 
   if ! validate_ipv4_cidr "$IP_CIDR"; then
-    die "Mesh IP/CIDR '$IP_CIDR' is invalid. Update $CONFIG_FILE or rerun interactively."
+    die "Mesh IP/CIDR '$IP_CIDR' is invalid. Rerun the installer with a valid value."
   fi
 
   if [ -z "$AP_INTERFACE" ]; then
@@ -588,7 +533,7 @@ gather_configuration() {
   fi
 
   if ! validate_ipv4_cidr "$AP_IP_CIDR"; then
-    die "Access point IP/CIDR '$AP_IP_CIDR' is invalid. Update $CONFIG_FILE or rerun interactively."
+    die "Access point IP/CIDR '$AP_IP_CIDR' is invalid. Rerun the installer with a valid value."
   fi
 
   AP_IP_ADDRESS="${AP_IP_CIDR%%/*}"
@@ -618,28 +563,6 @@ gather_configuration() {
   fi
 
   INTERACTIVE_MODE=$interactive
-
-  install -m 0644 -o root -g root /dev/null "$CONFIG_FILE"
-  cat >"$CONFIG_FILE" <<EOF
-MESH_ID="$MESH_ID"
-IFACE="$IFACE"
-BATIF="$BATIF"
-IP_CIDR="$IP_CIDR"
-COUNTRY="$COUNTRY"
-FREQ="$FREQ"
-BANDWIDTH="$BANDWIDTH"
-MTU="$MTU"
-BSSID="$BSSID"
-AP_INTERFACE="$AP_INTERFACE"
-AP_SSID="$AP_SSID"
-AP_PSK="$AP_PSK"
-AP_CHANNEL="$AP_CHANNEL"
-AP_COUNTRY="$AP_COUNTRY"
-AP_IP_CIDR="$AP_IP_CIDR"
-AP_DHCP_RANGE_START="$AP_DHCP_RANGE_START"
-AP_DHCP_RANGE_END="$AP_DHCP_RANGE_END"
-AP_DHCP_LEASE="$AP_DHCP_LEASE"
-EOF
 }
 
 update_system() {
@@ -696,7 +619,7 @@ EOF
 configure_access_point() {
   local hw_mode="g" hostapd_conf="/etc/hostapd/hostapd.conf" dnsmasq_conf="/etc/dnsmasq.d/mesh-ap.conf"
   local default_hostapd="/etc/default/hostapd" ip_setup_script="/usr/local/sbin/mesh-ap-setup"
-  local ip_service="/etc/systemd/system/mesh-ap-ip.service" ap_ip="$AP_IP_ADDRESS" escaped_config_path
+  local ip_service="/etc/systemd/system/mesh-ap-ip.service" ap_ip="$AP_IP_ADDRESS"
 
   if [ "$AP_CHANNEL" -gt 14 ]; then
     hw_mode="a"
@@ -757,36 +680,23 @@ log-dhcp
 EOF
 
   install -m 0755 -o root -g root /dev/null "$ip_setup_script"
-  cat >"$ip_setup_script" <<'EOF'
+  cat >"$ip_setup_script" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONFIG_FILE="${MESH_CONFIG_PATH:-__MESH_CONFIG_PATH__}"
-
-if [ -r "$CONFIG_FILE" ]; then
-  # shellcheck disable=SC1090
-  . "$CONFIG_FILE"
-else
-  echo "Configuration file '$CONFIG_FILE' does not exist or is not readable." >&2
-  exit 1
-fi
-
-interface="${AP_INTERFACE:-wlan0}"
-cidr="${AP_IP_CIDR:-10.0.0.1/24}"
+interface="$AP_INTERFACE"
+cidr="$AP_IP_CIDR"
 
 ip_bin="$(command -v ip)"
 
-if [ -z "$ip_bin" ]; then
+if [ -z "\$ip_bin" ]; then
   echo "ip command not found" >&2
   exit 1
 fi
 
-"$ip_bin" link set "$interface" up
-"$ip_bin" address replace "$cidr" dev "$interface"
+"\$ip_bin" link set "\$interface" up
+"\$ip_bin" address replace "\$cidr" dev "\$interface"
 EOF
-
-  escaped_config_path=$(printf '%s\n' "$CONFIG_FILE" | sed 's/[&]/\\&/g')
-  sed -i "s|__MESH_CONFIG_PATH__|$escaped_config_path|g" "$ip_setup_script"
 
   install -m 0644 -o root -g root /dev/null "$ip_service"
   cat >"$ip_service" <<EOF
@@ -835,19 +745,20 @@ setup_mesh_services() {
   fi
 
   install -m 0755 -o root -g root /dev/null /usr/local/sbin/meshctl
-  cat >/usr/local/sbin/meshctl <<'EOF'
+  cat >/usr/local/sbin/meshctl <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-CMD="${1:-status}"
-CONFIG_FILE="${MESH_CONFIG_PATH:-__MESH_CONFIG_PATH__}"
+CMD="\${1:-status}"
 
-if [ -r "$CONFIG_FILE" ]; then
-  # shellcheck disable=SC1090
-  . "$CONFIG_FILE"
-else
-  echo "Configuration file '$CONFIG_FILE' does not exist or is not readable." >&2
-  exit 1
-fi
+MESH_ID="$MESH_ID"
+FREQ="$FREQ"
+BANDWIDTH="$BANDWIDTH"
+BSSID="$BSSID"
+IFACE="$IFACE"
+COUNTRY="$COUNTRY"
+BATIF="$BATIF"
+MTU="$MTU"
+IP_CIDR="$IP_CIDR"
 
 mesh_supported() {
   iw list 2>/dev/null | awk '/Supported interface modes/{p=1} p{print} /Supported commands/{exit}' | grep -qi "mesh point"
@@ -855,53 +766,51 @@ mesh_supported() {
 
 mesh_up() {
   modprobe batman-adv
-  iw reg set "$COUNTRY" || true
-  command -v nmcli >/dev/null 2>&1 && nmcli dev set "$IFACE" managed no || true
+  iw reg set "\$COUNTRY" || true
+  command -v nmcli >/dev/null 2>&1 && nmcli dev set "\$IFACE" managed no || true
 
-  ip link set "$IFACE" down || true
+  ip link set "\$IFACE" down || true
   if mesh_supported; then
-    iw dev "$IFACE" set type mp
-    ip link set "$IFACE" up
-    iw dev "$IFACE" mesh join "$MESH_ID" freq "$FREQ" "$BANDWIDTH"
+    iw dev "\$IFACE" set type mp
+    ip link set "\$IFACE" up
+    iw dev "\$IFACE" mesh join "\$MESH_ID" freq "\$FREQ" "\$BANDWIDTH"
   else
-    iw dev "$IFACE" set type ibss
-    ip link set "$IFACE" up
-    iw dev "$IFACE" ibss join "$MESH_ID" "$FREQ" "$BANDWIDTH" fixed-freq "$BSSID"
+    iw dev "\$IFACE" set type ibss
+    ip link set "\$IFACE" up
+    iw dev "\$IFACE" ibss join "\$MESH_ID" "\$FREQ" "\$BANDWIDTH" fixed-freq "\$BSSID"
   fi
 
-  batctl if add "$IFACE" || true
-  ip link set up dev "$IFACE"
-  ip link set up dev "$BATIF"
-  ip link set dev "$BATIF" mtu "$MTU" || true
-  ip addr add "$IP_CIDR" dev "$BATIF" || true
+  batctl if add "\$IFACE" || true
+  ip link set up dev "\$IFACE"
+  ip link set up dev "\$BATIF"
+  ip link set dev "\$BATIF" mtu "\$MTU" || true
+  ip addr add "\$IP_CIDR" dev "\$BATIF" || true
 }
 
 mesh_down() {
-  ip addr flush dev "$BATIF" || true
-  ip link set "$BATIF" down || true
-  batctl if del "$IFACE" 2>/dev/null || true
-  iw dev "$IFACE" mesh leave 2>/dev/null || true
-  ip link set "$IFACE" down || true
+  ip addr flush dev "\$BATIF" || true
+  ip link set "\$BATIF" down || true
+  batctl if del "\$IFACE" 2>/dev/null || true
+  iw dev "\$IFACE" mesh leave 2>/dev/null || true
+  ip link set "\$IFACE" down || true
 }
 
 mesh_status() {
-  echo "== Interfaces =="; ip -br link | grep -E "$IFACE|$BATIF" || true
+  echo "== Interfaces =="; ip -br link | grep -E "\$IFACE|\$BATIF" || true
   echo "== batctl if =="; batctl if || true
-  echo "== originators =="; batctl -m "$BATIF" o 2>/dev/null || true
+  echo "== originators =="; batctl -m "\$BATIF" o 2>/dev/null || true
   echo "== neighbors =="; batctl n 2>/dev/null || true
-  echo "== 802.11s mpath =="; iw dev "$IFACE" mpath dump 2>/dev/null || true
-  echo "== stations (IBSS) =="; iw dev "$IFACE" station dump 2>/dev/null || true
+  echo "== 802.11s mpath =="; iw dev "\$IFACE" mpath dump 2>/dev/null || true
+  echo "== stations (IBSS) =="; iw dev "\$IFACE" station dump 2>/dev/null || true
 }
 
-case "$CMD" in
+case "\$CMD" in
   up) mesh_up;;
   down) mesh_down;;
   status) mesh_status;;
   *) echo "Usage: meshctl {up|down|status}"; exit 2;;
 esac
 EOF
-
-  sed -i "s|__MESH_CONFIG_PATH__|$(printf '%s\n' "$CONFIG_FILE" | sed 's/[&]/\\&/g')|g" /usr/local/sbin/meshctl
 
   install -m 0644 -o root -g root /dev/null /etc/systemd/system/mesh.service
   cat >/etc/systemd/system/mesh.service <<'EOF'
