@@ -649,6 +649,50 @@ update_system() {
   info "Operating system update and upgrade complete."
 }
 
+ensure_networkmanager_unmanages_interfaces() {
+  if ! command_exists nmcli; then
+    return
+  fi
+
+  local nm_conf_dir="/etc/NetworkManager/conf.d" unmanaged_file="$nm_conf_dir/mesh-radio-unmanaged.conf"
+  local -a interfaces=("$IFACE")
+  local unmanaged_devices="" nm_iface interface_label=""
+
+  if [ -n "${AP_INTERFACE:-}" ] && [ "$AP_INTERFACE" != "$IFACE" ]; then
+    interfaces+=("$AP_INTERFACE")
+  fi
+
+  install -d -m 0755 "$nm_conf_dir"
+
+  for nm_iface in "${interfaces[@]}"; do
+    if [ -n "$nm_iface" ]; then
+      if [ -n "$unmanaged_devices" ]; then
+        unmanaged_devices+=";"
+      fi
+      unmanaged_devices+="interface-name:${nm_iface}"
+    fi
+  done
+
+  if [ -n "$unmanaged_devices" ]; then
+    cat >"$unmanaged_file" <<EOF
+[keyfile]
+unmanaged-devices=$unmanaged_devices
+EOF
+
+    interface_label="${interfaces[*]}"
+    info "Configured NetworkManager to leave the following interfaces unmanaged: ${interface_label}."
+  fi
+
+  nmcli general reload || true
+
+  for nm_iface in "${interfaces[@]}"; do
+    if [ -n "$nm_iface" ]; then
+      nmcli device disconnect "$nm_iface" >/dev/null 2>&1 || true
+      nmcli device set "$nm_iface" managed no >/dev/null 2>&1 || true
+    fi
+  done
+}
+
 configure_access_point() {
   local hw_mode="g" hostapd_conf="/etc/hostapd/hostapd.conf" dnsmasq_conf="/etc/dnsmasq.d/mesh-ap.conf"
   local default_hostapd="/etc/default/hostapd" ip_setup_script="/usr/local/sbin/mesh-ap-setup"
@@ -659,6 +703,8 @@ configure_access_point() {
   fi
 
   info "Configuring Wi-Fi access point on ${AP_INTERFACE} with static address ${AP_IP_CIDR}."
+
+  ensure_networkmanager_unmanages_interfaces
 
   install -d -m 0755 /etc/hostapd
   install -d -m 0755 /etc/dnsmasq.d
