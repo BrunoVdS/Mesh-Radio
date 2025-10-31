@@ -509,7 +509,7 @@ gather_configuration() {
     info "Gathering access point configuration."
     ask "Access point interface" "$AP_INTERFACE" AP_INTERFACE
     ask "Access point SSID" "$AP_SSID" AP_SSID
-    ask_hidden "Access point WPA2/WPA3 passphrase" "$AP_PSK" AP_PSK
+    ask_hidden "Access point WPA2 passphrase" "$AP_PSK" AP_PSK
     ask "Access point channel" "$AP_CHANNEL" AP_CHANNEL
     ask "Access point country code" "$AP_COUNTRY" AP_COUNTRY
     ask "Access point IP/CIDR" "$AP_IP_CIDR" AP_IP_CIDR
@@ -648,15 +648,13 @@ ieee80211d=1
 ieee80211h=1
 ieee80211n=1
 ieee80211ac=1
-ieee80211w=2
-sae_require_mfp=1
-sae_pwe=1
+# WPA2-only configuration for broad hardware compatibility. Enable SAE manually if supported.
+ieee80211w=1
 wpa=2
-wpa_key_mgmt=WPA-PSK SAE
+wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
 auth_algs=1
 wpa_passphrase=$AP_PSK
-sae_password=$AP_PSK
 beacon_int=100
 ignore_broadcast_ssid=0
 EOF
