@@ -15,7 +15,6 @@ trap 'echo "[ERROR] Unexpected error on line $LINENO" >&2' ERR
 
 # === Variables ====================================================================
 
-SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 LOGFILE="/var/log/mesh-install.log"
 SYSTEMCTL=$(command -v systemctl || true)
 UNATTENDED_INSTALL=0
@@ -70,7 +69,7 @@ command_exists() {
   # === Defining attended of unattended install helpers
 usage() {
   cat <<USAGE
-Usage: basic_installer.sh [--attended | --unattended]
+Usage: installer.sh [--attended | --unattended]
 
 By default the installer runs in attended (interactive) mode.
 Use --unattended to apply defaults without prompting.
@@ -342,49 +341,6 @@ validate_wpa_passphrase() {
   [ "$length" -ge 8 ] && [ "$length" -le 63 ]
 }
 
-ensure_network_manager_ready() {
-  if ! command_exists nmcli; then
-    warn "NetworkManager (nmcli) is required for access point setup."
-    return 1
-  fi
-
-  if [ -n "$SYSTEMCTL" ] && "$SYSTEMCTL" list-unit-files NetworkManager.service >/dev/null 2>&1; then
-    "$SYSTEMCTL" enable NetworkManager >/dev/null 2>&1 || true
-    if ! "$SYSTEMCTL" is-active NetworkManager >/dev/null 2>&1; then
-      "$SYSTEMCTL" start NetworkManager >/dev/null 2>&1 || return 1
-    fi
-  fi
-
-  return 0
-}
-
-wait_for_wlan_network_details() {
-  local attempt ip_cidr route_subnet
-
-  WLAN_IP=""
-  AP_SUBNET=""
-
-  for attempt in $(seq 1 20); do
-    ip_cidr=$(ip -o -4 addr show dev wlan0 | awk '{print $4}' | head -n1)
-    if [ -n "$ip_cidr" ]; then
-      WLAN_IP="${ip_cidr%%/*}"
-      AP_SUBNET="$ip_cidr"
-      route_subnet=$(ip -4 route show dev wlan0 | awk '/proto kernel/ {print $1; exit}')
-      if [ -n "$route_subnet" ]; then
-        AP_SUBNET="$route_subnet"
-      fi
-      return 0
-    fi
-    sleep 1
-  done
-
-  if [ -z "$AP_SUBNET" ] && [ -n "${AP_IP_CIDR:-}" ]; then
-    AP_SUBNET="$AP_IP_CIDR"
-  fi
-
-  return 1
-}
-
   # === Check if certain programs are installed helper
 log_apt_package_versions() {
   local pkg version status
@@ -408,9 +364,9 @@ log_service_status() {
   fi
 
   for service in "$@"; do
-    if systemctl list-unit-files "${service}.service" >/dev/null 2>&1; then
-      active=$(systemctl is-active "${service}.service" 2>/dev/null || true)
-      enabled=$(systemctl is-enabled "${service}.service" 2>/dev/null || true)
+    if "$SYSTEMCTL" list-unit-files "${service}.service" >/dev/null 2>&1; then
+      active=$("$SYSTEMCTL" is-active "${service}.service" 2>/dev/null || true)
+      enabled=$("$SYSTEMCTL" is-enabled "${service}.service" 2>/dev/null || true)
       info "Service ${service}.service status: active=$active, enabled=$enabled."
     else
       warn "Service ${service}.service not found."
@@ -452,7 +408,7 @@ log_installation_summary() {
     info "batctl detailed version: $(batctl -v | head -n1)"
   fi
 
-  log_service_status mesh rnsd reticulum-meshchat
+  log_service_status mesh rnsd
 }
 
   # === Check if the logfile exists
