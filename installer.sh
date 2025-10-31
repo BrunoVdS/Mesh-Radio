@@ -534,7 +534,7 @@ gather_configuration() {
   : "${MESH_ID:=MESHNODE}"
   : "${IFACE:=wlan1}"
   : "${BATIF:=bat0}"
-  : "${IP_CIDR:=192.168.0.2/24}"
+  : "${IP_CIDR:=192.168.0.1/24}"
   : "${COUNTRY:=BE}"
   : "${FREQ:=5180}"
   : "${BANDWIDTH:=HT20}"
