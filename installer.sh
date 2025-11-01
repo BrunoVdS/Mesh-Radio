@@ -101,6 +101,62 @@ parse_cli_args() {
   done
 }
 
+verify_supported_os() {
+  local os_release="/etc/os-release"
+  local supported=0
+  local id id_like pretty_name
+  local -a missing_essential=()
+
+  if [ ! -r "$os_release" ]; then
+    die "Unable to detect operating system details; '$os_release' is not readable."
+  fi
+
+  # shellcheck disable=SC1091
+  . "$os_release"
+  id="${ID:-}"
+  id_like="${ID_LIKE:-}"
+  pretty_name="${PRETTY_NAME:-${NAME:-Unknown}}"
+
+  case "$id" in
+    debian|ubuntu)
+      supported=1
+      ;;
+  esac
+
+  if [ "$supported" -eq 0 ] && [ -n "$id_like" ]; then
+    for token in $id_like; do
+      case "$token" in
+        debian|ubuntu)
+          supported=1
+          break
+          ;;
+      esac
+    done
+  fi
+
+  if [ "$supported" -eq 0 ]; then
+    die "Unsupported operating system '${pretty_name}'. Mesh Radio requires Debian or Ubuntu."
+  fi
+
+  info "Detected supported operating system: ${pretty_name}."
+
+  for binary in systemctl python3 pip; do
+    if ! command_exists "$binary"; then
+      missing_essential+=("$binary")
+    fi
+  done
+
+  if [ "${#missing_essential[@]}" -ne 0 ]; then
+    die "Missing required utilities: ${missing_essential[*]}. Please install them before running the installer."
+  fi
+
+  for optional_tool in nmcli; do
+    if ! command_exists "$optional_tool"; then
+      warn "Optional tool '${optional_tool}' not found; related capabilities will be skipped."
+    fi
+  done
+}
+
   # === Creating text on the terminal helper
 prompt_to_terminal() {
   local text="$1"
@@ -973,6 +1029,8 @@ install_packages() {
 # === Main installation sequence ========================================================
 main() {
   parse_cli_args "$@"
+
+  verify_supported_os
 
   if [[ $EUID -ne 0 ]]; then
     error "This installer must be run as root."
