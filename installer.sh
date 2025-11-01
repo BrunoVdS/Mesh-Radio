@@ -143,8 +143,7 @@ ask() {
   if [ -n "$var_name" ]; then
     printf -v "$var_name" '%s' "$input"
   else
-    printf '%s
-' "$input"
+    printf '%s\n' "$input"
   fi
 }
 
@@ -163,15 +162,13 @@ ask_hidden() {
 
   prompt_to_terminal "$prompt_text"
   prompt_read -rs input || return 1
-  prompt_to_terminal $'
-'
+  prompt_to_terminal $'\n'
   input="${input:-$default_value}"
 
   if [ -n "$var_name" ]; then
     printf -v "$var_name" '%s' "$input"
   else
-    printf '%s
-' "$input"
+    printf '%s\n' "$input"
   fi
 }
 
@@ -218,8 +215,7 @@ confirm() {
         ;;
       *)
         prompt_to_terminal "Please answer with 'y' or 'n'."
-        prompt_to_terminal $'
-'
+        prompt_to_terminal $'\n'
         ;;
     esac
   done
