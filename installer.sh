@@ -227,6 +227,14 @@ die() {
   exit 1
 }
 
+prepare_apt_environment() {
+  export DEBIAN_FRONTEND=noninteractive
+
+  if ! command_exists apt-get; then
+    die "apt-get is required but was not found on this system."
+  fi
+}
+
   # === Validate IP4 helper
 validate_ipv4_cidr() {
   local cidr="$1" ip prefix o1 o2 o3 o4 octet
@@ -519,8 +527,14 @@ gather_configuration() {
 
 update_system() {
   info "Starting operating system update and upgrade."
-  apt-get update -y
-  apt-get -o Dpkg::Options::="--force-confdef"           -o Dpkg::Options::="--force-confold"           dist-upgrade -y
+  if ! apt-get update; then
+    die "Failed to update apt package lists."
+  fi
+  if ! apt-get -o Dpkg::Options::="--force-confdef" \
+          -o Dpkg::Options::="--force-confold" \
+          dist-upgrade -y; then
+    die "Failed to perform dist-upgrade."
+  fi
   info "Operating system update and upgrade complete."
 }
 
@@ -966,6 +980,8 @@ main() {
   fi
 
   ensure_logfile
+
+  prepare_apt_environment
 
   info "================================================="
   info "===                                           ==="
