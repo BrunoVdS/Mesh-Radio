@@ -31,34 +31,42 @@ timestamp() {
 
   # === Defining different log helpers
 log() {
-  echo "[$(timestamp)] $*" >>"$LOGFILE"
+  local ts
+  ts=$(timestamp)
+  printf '%s\n' "[$ts] $*"
 }
 
 info() {
-  local message="INFO: $*"
+  local ts message formatted
+  ts=$(timestamp)
+  message="INFO: $*"
+  formatted="[$ts] ${message}"
   if [ -e /proc/$$/fd/3 ]; then
-    echo "[$(timestamp)] ${message}" | tee -a "$LOGFILE" >&3
-  else
-    echo "[$(timestamp)] ${message}"
+    printf '%s\n' "$formatted" >&3
   fi
+  printf '%s\n' "$formatted"
 }
 
 warn() {
-  local message="WARN: $*"
+  local ts message formatted
+  ts=$(timestamp)
+  message="WARN: $*"
+  formatted="[$ts] ${message}"
   if [ -e /proc/$$/fd/3 ]; then
-    echo "[$(timestamp)] ${message}" | tee -a "$LOGFILE" >&3
-  else
-    echo "[$(timestamp)] ${message}" | tee -a "$LOGFILE"
+    printf '%s\n' "$formatted" >&3
   fi
+  printf '%s\n' "$formatted"
 }
 
 error() {
-  local message="ERROR: $*"
+  local ts message formatted
+  ts=$(timestamp)
+  message="ERROR: $*"
+  formatted="[$ts] ${message}"
   if [ -e /proc/$$/fd/3 ]; then
-    echo "[$(timestamp)] ${message}" | tee -a "$LOGFILE" >&3
-  else
-    echo "[$(timestamp)] ${message}" >&2
+    printf '%s\n' "$formatted" >&3
   fi
+  printf '%s\n' "$formatted" >&2
 }
 
   # === log installation summary helper
