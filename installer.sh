@@ -101,62 +101,6 @@ parse_cli_args() {
   done
 }
 
-verify_supported_os() {
-  local os_release="/etc/os-release"
-  local supported=0
-  local id id_like pretty_name
-  local -a missing_essential=()
-
-  if [ ! -r "$os_release" ]; then
-    die "Unable to detect operating system details; '$os_release' is not readable."
-  fi
-
-  # shellcheck disable=SC1091
-  . "$os_release"
-  id="${ID:-}"
-  id_like="${ID_LIKE:-}"
-  pretty_name="${PRETTY_NAME:-${NAME:-Unknown}}"
-
-  case "$id" in
-    debian|ubuntu)
-      supported=1
-      ;;
-  esac
-
-  if [ "$supported" -eq 0 ] && [ -n "$id_like" ]; then
-    for token in $id_like; do
-      case "$token" in
-        debian|ubuntu)
-          supported=1
-          break
-          ;;
-      esac
-    done
-  fi
-
-  if [ "$supported" -eq 0 ]; then
-    die "Unsupported operating system '${pretty_name}'. Mesh Radio requires Debian or Ubuntu."
-  fi
-
-  info "Detected supported operating system: ${pretty_name}."
-
-  for binary in systemctl python3 pip; do
-    if ! command_exists "$binary"; then
-      missing_essential+=("$binary")
-    fi
-  done
-
-  if [ "${#missing_essential[@]}" -ne 0 ]; then
-    die "Missing required utilities: ${missing_essential[*]}. Please install them before running the installer."
-  fi
-
-  for optional_tool in nmcli; do
-    if ! command_exists "$optional_tool"; then
-      warn "Optional tool '${optional_tool}' not found; related capabilities will be skipped."
-    fi
-  done
-}
-
   # === Creating text on the terminal helper
 prompt_to_terminal() {
   local text="$1"
@@ -199,7 +143,8 @@ ask() {
   if [ -n "$var_name" ]; then
     printf -v "$var_name" '%s' "$input"
   else
-    printf '%s\n' "$input"
+    printf '%s
+' "$input"
   fi
 }
 
@@ -218,13 +163,15 @@ ask_hidden() {
 
   prompt_to_terminal "$prompt_text"
   prompt_read -rs input || return 1
-  prompt_to_terminal $'\n'
+  prompt_to_terminal $'
+'
   input="${input:-$default_value}"
 
   if [ -n "$var_name" ]; then
     printf -v "$var_name" '%s' "$input"
   else
-    printf '%s\n' "$input"
+    printf '%s
+' "$input"
   fi
 }
 
@@ -271,41 +218,17 @@ confirm() {
         ;;
       *)
         prompt_to_terminal "Please answer with 'y' or 'n'."
-        prompt_to_terminal $'\n'
+        prompt_to_terminal $'
+'
         ;;
     esac
   done
-}
-
-normalize_bool() {
-  local value="$1"
-  value=$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')
-  case "$value" in
-    1|true|yes|y|on)
-      printf '%s' "yes"
-      ;;
-    *)
-      printf '%s' "no"
-      ;;
-  esac
-}
-
-is_true() {
-  [ "$(normalize_bool "$1")" = "yes" ]
 }
 
   # === Error helper
 die() {
   error "$*"
   exit 1
-}
-
-prepare_apt_environment() {
-  export DEBIAN_FRONTEND=noninteractive
-
-  if ! command_exists apt-get; then
-    die "apt-get is required but was not found on this system."
-  fi
 }
 
   # === Validate IP4 helper
@@ -512,14 +435,14 @@ gather_configuration() {
   : "${MESH_ID:=MESHNODE}"
   : "${IFACE:=wlan1}"
   : "${BATIF:=bat0}"
-  : "${IP_CIDR:=192.168.0.1/24}"
+  : "${IP_CIDR:=192.168.0.2/24}"
   : "${COUNTRY:=BE}"
   : "${FREQ:=5180}"
   : "${BANDWIDTH:=HT20}"
   : "${MTU:=1532}"
   : "${BSSID:=02:12:34:56:78:9A}"
   : "${AP_INTERFACE:=wlan0}"
-  : "${AP_SSID:=Node1}"
+  : "${AP_SSID:=Node2}"
   : "${AP_PSK:=SuperSecret123}"
   : "${AP_CHANNEL:=6}"
   : "${AP_COUNTRY:=BE}"
@@ -527,9 +450,6 @@ gather_configuration() {
   : "${AP_DHCP_RANGE_START:=10.0.0.100}"
   : "${AP_DHCP_RANGE_END:=10.0.0.200}"
   : "${AP_DHCP_LEASE:=12h}"
-  : "${BRIDGE_AP_TO_MESH:=no}"
-  : "${BRIDGE_NAME:=br-mesh}"
-  : "${WIRED_MESH_INTERFACES:=}"
 
   if [ $interactive -eq 1 ]; then
     info "Gathering mesh configuration."
@@ -552,29 +472,9 @@ gather_configuration() {
     ask "Access point DHCP range start" "$AP_DHCP_RANGE_START" AP_DHCP_RANGE_START
     ask "Access point DHCP range end" "$AP_DHCP_RANGE_END" AP_DHCP_RANGE_END
     ask "Access point DHCP lease" "$AP_DHCP_LEASE" AP_DHCP_LEASE
-
-    local default_bridge_answer="no"
-    if is_true "$BRIDGE_AP_TO_MESH"; then
-      default_bridge_answer="yes"
-    fi
-    if confirm "Bridge ${AP_INTERFACE} clients onto ${BATIF}?" "$default_bridge_answer"; then
-      BRIDGE_AP_TO_MESH=yes
-      ask "Linux bridge name for bridged mesh" "$BRIDGE_NAME" BRIDGE_NAME
-    else
-      BRIDGE_AP_TO_MESH=no
-    fi
-
-    ask "Comma-separated wired interfaces to join the mesh (blank for none)" "$WIRED_MESH_INTERFACES" WIRED_MESH_INTERFACES
   else
     info "Running in unattended mode; using configuration defaults for mesh."
   fi
-
-  BRIDGE_AP_TO_MESH=$(normalize_bool "$BRIDGE_AP_TO_MESH")
-  if [ -z "$BRIDGE_NAME" ]; then
-    BRIDGE_NAME="br-mesh"
-  fi
-
-  WIRED_MESH_INTERFACES="${WIRED_MESH_INTERFACES:-}"
 
   if ! validate_ipv4_cidr "$IP_CIDR"; then
     die "Mesh IP/CIDR '$IP_CIDR' is invalid. Rerun the installer with a valid value."
@@ -623,14 +523,8 @@ gather_configuration() {
 
 update_system() {
   info "Starting operating system update and upgrade."
-  if ! apt-get update; then
-    die "Failed to update apt package lists."
-  fi
-  if ! apt-get -o Dpkg::Options::="--force-confdef" \
-          -o Dpkg::Options::="--force-confold" \
-          dist-upgrade -y; then
-    die "Failed to perform dist-upgrade."
-  fi
+  apt-get update -y
+  apt-get -o Dpkg::Options::="--force-confdef"           -o Dpkg::Options::="--force-confold"           dist-upgrade -y
   info "Operating system update and upgrade complete."
 }
 
@@ -643,37 +537,14 @@ ensure_networkmanager_unmanages_interfaces() {
   local unmanaged_file="$nm_conf_dir/mesh-radio-unmanaged.conf"
   local -a interfaces=("$IFACE")
   local unmanaged_devices="" nm_iface interface_label=""
-  local -a wired_ifaces=()
 
   if [ -n "${AP_INTERFACE:-}" ] && [ "$AP_INTERFACE" != "$IFACE" ]; then
     interfaces+=("$AP_INTERFACE")
   fi
 
-  if is_true "$BRIDGE_AP_TO_MESH"; then
-    interfaces+=("$BRIDGE_NAME")
-  fi
-
-  if [ -n "${WIRED_MESH_INTERFACES:-}" ]; then
-    IFS=',' read -r -a wired_ifaces <<<"$WIRED_MESH_INTERFACES"
-    for nm_iface in "${wired_ifaces[@]}"; do
-      nm_iface=$(printf '%s' "$nm_iface" | tr -d '[:space:]')
-      if [ -n "$nm_iface" ]; then
-        interfaces+=("$nm_iface")
-      fi
-    done
-  fi
-
   install -d -m 0755 "$nm_conf_dir"
 
-  local -A seen=()
   for nm_iface in "${interfaces[@]}"; do
-    if [ -z "$nm_iface" ]; then
-      continue
-    fi
-    if [ -n "${seen[$nm_iface]:-}" ]; then
-      continue
-    fi
-    seen[$nm_iface]=1
     if [ -n "$nm_iface" ]; then
       if [ -n "$unmanaged_devices" ]; then
         unmanaged_devices+=";"
@@ -694,7 +565,7 @@ EOF
 
   nmcli general reload || true
 
-  for nm_iface in "${!seen[@]}"; do
+  for nm_iface in "${interfaces[@]}"; do
     if [ -n "$nm_iface" ]; then
       nmcli device disconnect "$nm_iface" >/dev/null 2>&1 || true
       nmcli device set "$nm_iface" managed no >/dev/null 2>&1 || true
@@ -706,11 +577,6 @@ configure_access_point() {
   local hw_mode="g" hostapd_conf="/etc/hostapd/hostapd.conf" dnsmasq_conf="/etc/dnsmasq.d/mesh-ap.conf"
   local default_hostapd="/etc/default/hostapd" ip_setup_script="/usr/local/sbin/mesh-ap-setup"
   local ip_service="/etc/systemd/system/mesh-ap-ip.service" ap_ip="$AP_IP_ADDRESS"
-  local dhcp_interface="$AP_INTERFACE"
-
-  if is_true "$BRIDGE_AP_TO_MESH"; then
-    dhcp_interface="$BRIDGE_NAME"
-  fi
 
   if [ "$AP_CHANNEL" -gt 14 ]; then
     hw_mode="a"
@@ -760,7 +626,7 @@ EOF
 
   install -m 0644 -o root -g root /dev/null "$dnsmasq_conf"
   cat >"$dnsmasq_conf" <<EOF
-interface=$dhcp_interface
+interface=$AP_INTERFACE
 bind-interfaces
 dhcp-range=$AP_DHCP_RANGE_START,$AP_DHCP_RANGE_END,$AP_DHCP_LEASE
 dhcp-option=option:router,$ap_ip
@@ -775,39 +641,16 @@ set -euo pipefail
 
 interface="$AP_INTERFACE"
 cidr="$AP_IP_CIDR"
-bridge_enable="$BRIDGE_AP_TO_MESH"
-bridge_name="$BRIDGE_NAME"
-bat_iface="$BATIF"
 
 ip_bin="$(command -v ip)"
 
-if [ -z "$ip_bin" ]; then
+if [ -z "\$ip_bin" ]; then
   echo "ip command not found" >&2
   exit 1
 fi
 
-target_dev="$interface"
-
-case "$bridge_enable" in
-  yes)
-    if ! "$ip_bin" link show "$bridge_name" >/dev/null 2>&1; then
-      "$ip_bin" link add name "$bridge_name" type bridge || true
-    fi
-    "$ip_bin" link set dev "$bridge_name" type bridge stp_state 1 2>/dev/null || true
-    "$ip_bin" link set "$bridge_name" up
-    "$ip_bin" link set "$interface" up
-    "$ip_bin" link set "$interface" master "$bridge_name" || true
-    if [ -n "$bat_iface" ] && "$ip_bin" link show "$bat_iface" >/dev/null 2>&1; then
-      "$ip_bin" link set "$bat_iface" master "$bridge_name" >/dev/null 2>&1 || true
-    fi
-    target_dev="$bridge_name"
-    ;;
-  *)
-    "$ip_bin" link set "$interface" up
-    ;;
-esac
-
-"$ip_bin" address replace "$cidr" dev "$target_dev"
+"\$ip_bin" link set "\$interface" up
+"\$ip_bin" address replace "\$cidr" dev "\$interface"
 EOF
 
   install -m 0644 -o root -g root /dev/null "$ip_service"
@@ -827,15 +670,10 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
 
-  local ip_target_label="${AP_INTERFACE}"
-  if is_true "$BRIDGE_AP_TO_MESH"; then
-    ip_target_label="${BRIDGE_NAME}"
-  fi
-
   if "$ip_setup_script"; then
-    info "Assigned ${AP_IP_CIDR} to ${ip_target_label}."
+    info "Assigned ${AP_IP_CIDR} to ${AP_INTERFACE}."
   else
-    warn "Failed to assign ${AP_IP_CIDR} to ${ip_target_label}; check mesh-ap-setup script."
+    warn "Failed to assign ${AP_IP_CIDR} to ${AP_INTERFACE}; check mesh-ap-setup script."
   fi
 
   if [ -n "$SYSTEMCTL" ]; then
@@ -876,82 +714,6 @@ COUNTRY="$COUNTRY"
 BATIF="$BATIF"
 MTU="$MTU"
 IP_CIDR="$IP_CIDR"
-AP_INTERFACE="$AP_INTERFACE"
-BRIDGE_AP_TO_MESH="$BRIDGE_AP_TO_MESH"
-BRIDGE_NAME="$BRIDGE_NAME"
-WIRED_MESH_INTERFACES="$WIRED_MESH_INTERFACES"
-
-normalize_bool() {
-  local value="\$1"
-  value=$(printf '%s' "\$value" | tr '[:upper:]' '[:lower:]')
-  case "\$value" in
-    1|true|yes|y|on)
-      printf '%s' "yes"
-      ;;
-    *)
-      printf '%s' "no"
-      ;;
-  esac
-}
-
-is_true() {
-  [ "\$(normalize_bool "\$1")" = "yes" ]
-}
-
-trim_iface() {
-  printf '%s' "\$1" | tr -d '[:space:]'
-}
-
-ensure_bridge() {
-  if ! is_true "\$BRIDGE_AP_TO_MESH"; then
-    return 0
-  fi
-
-  local ip_bin
-  ip_bin=$(command -v ip)
-  if [ -z "\$ip_bin" ]; then
-    echo "ip command not found" >&2
-    return 1
-  fi
-
-  if ! "\$ip_bin" link show "\$BRIDGE_NAME" >/dev/null 2>&1; then
-    "\$ip_bin" link add name "\$BRIDGE_NAME" type bridge || true
-  fi
-  "\$ip_bin" link set dev "\$BRIDGE_NAME" type bridge stp_state 1 2>/dev/null || true
-  "\$ip_bin" link set "\$BRIDGE_NAME" up || true
-
-  if [ -n "\$AP_INTERFACE" ]; then
-    "\$ip_bin" link set "\$AP_INTERFACE" up || true
-    "\$ip_bin" link set "\$AP_INTERFACE" master "\$BRIDGE_NAME" 2>/dev/null || true
-  fi
-}
-
-configure_wired_interfaces() {
-  local action="\$1"
-  local list="\$WIRED_MESH_INTERFACES"
-  local wired
-
-  if [ -z "\$list" ]; then
-    return
-  fi
-
-  IFS=',' read -r -a wired_array <<<"\$list"
-  for wired in "\${wired_array[@]}"; do
-    wired=$(trim_iface "\$wired")
-    if [ -z "\$wired" ]; then
-      continue
-    fi
-    case "\$action" in
-      add)
-        ip link set "\$wired" up || true
-        batctl if add "\$wired" || true
-        ;;
-      del)
-        batctl if del "\$wired" 2>/dev/null || true
-        ;;
-    esac
-  done
-}
 
 mesh_supported() {
   iw list 2>/dev/null | awk '/Supported interface modes/{p=1} p{print} /Supported commands/{exit}' | grep -qi "mesh point"
@@ -977,37 +739,11 @@ mesh_up() {
   ip link set up dev "\$IFACE"
   ip link set up dev "\$BATIF"
   ip link set dev "\$BATIF" mtu "\$MTU" || true
-
-  local ip_target="\$BATIF"
-  if is_true "\$BRIDGE_AP_TO_MESH" && [ -n "\$BRIDGE_NAME" ]; then
-    ensure_bridge || true
-    ip link set "\$BATIF" master "\$BRIDGE_NAME" 2>/dev/null || true
-    ip_target="\$BRIDGE_NAME"
-  else
-    ip link set "\$BATIF" nomaster 2>/dev/null || true
-    if [ -n "\$BRIDGE_NAME" ] && [ -n "\$AP_INTERFACE" ]; then
-      ip link set "\$AP_INTERFACE" nomaster 2>/dev/null || true
-    fi
-  fi
-
-  ip addr replace "\$IP_CIDR" dev "\$ip_target" || true
-
-  configure_wired_interfaces add
+  ip addr add "\$IP_CIDR" dev "\$BATIF" || true
 }
 
 mesh_down() {
-  configure_wired_interfaces del
-
-  if is_true "\$BRIDGE_AP_TO_MESH" && [ -n "\$BRIDGE_NAME" ]; then
-    ip addr del "\$IP_CIDR" dev "\$BRIDGE_NAME" 2>/dev/null || true
-    ip link set "\$BATIF" nomaster 2>/dev/null || true
-    if [ -n "\$AP_INTERFACE" ]; then
-      ip link set "\$AP_INTERFACE" nomaster 2>/dev/null || true
-    fi
-  else
-    ip addr del "\$IP_CIDR" dev "\$BATIF" 2>/dev/null || true
-  fi
-
+  ip addr flush dev "\$BATIF" || true
   ip link set "\$BATIF" down || true
   batctl if del "\$IFACE" 2>/dev/null || true
   iw dev "\$IFACE" mesh leave 2>/dev/null || true
@@ -1016,9 +752,6 @@ mesh_down() {
 
 mesh_status() {
   echo "== Interfaces =="; ip -br link | grep -E "\$IFACE|\$BATIF" || true
-  if is_true "\$BRIDGE_AP_TO_MESH" && [ -n "\$BRIDGE_NAME" ]; then
-    echo "== Bridge links =="; ip -br link show type bridge || true
-  fi
   echo "== batctl if =="; batctl if || true
   echo "== originators =="; batctl -m "\$BATIF" o 2>/dev/null || true
   echo "== neighbors =="; batctl n 2>/dev/null || true
@@ -1231,16 +964,12 @@ install_packages() {
 main() {
   parse_cli_args "$@"
 
-  verify_supported_os
-
   if [[ $EUID -ne 0 ]]; then
     error "This installer must be run as root."
     exit 1
   fi
 
   ensure_logfile
-
-  prepare_apt_environment
 
   info "================================================="
   info "===                                           ==="
@@ -1266,4 +995,3 @@ main() {
 }
 
 main "$@"
-
