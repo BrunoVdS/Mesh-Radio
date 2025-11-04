@@ -66,54 +66,6 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
-verify_supported_os() {
-  if [ ! -r /etc/os-release ]; then
-    echo "ERROR: Unable to verify host operating system because /etc/os-release is missing." >&2
-    exit 1
-  fi
-
-  # shellcheck disable=SC1091
-  . /etc/os-release
-
-  local identifiers="${ID:-} ${ID_LIKE:-}"
-  local supported=0
-
-  for os_id in $identifiers; do
-    case "$os_id" in
-      debian|ubuntu)
-        supported=1
-        break
-        ;;
-    esac
-  done
-
-  if [ "$supported" -ne 1 ]; then
-    echo "ERROR: Unsupported operating system: ${PRETTY_NAME:-${ID:-unknown}}. This installer requires Debian or Ubuntu." >&2
-    exit 1
-  fi
-
-  local -a missing_required=()
-  local required_tool
-  for required_tool in systemctl python3 pip; do
-    if ! command_exists "$required_tool"; then
-      missing_required+=("$required_tool")
-    fi
-  done
-
-  if [ "${#missing_required[@]}" -gt 0 ]; then
-    echo "ERROR: Missing required utilities: ${missing_required[*]}. Please install them before running the installer." >&2
-    exit 1
-  fi
-
-  local -a optional_tools=(nmcli)
-  local optional_tool
-  for optional_tool in "${optional_tools[@]}"; do
-    if ! command_exists "$optional_tool"; then
-      echo "WARN: Optional utility '$optional_tool' not found. Related capabilities will be skipped." >&2
-    fi
-  done
-}
-
   # === Defining attended of unattended install helpers
 usage() {
   cat <<USAGE
@@ -191,7 +143,8 @@ ask() {
   if [ -n "$var_name" ]; then
     printf -v "$var_name" '%s' "$input"
   else
-    printf '%s\n' "$input"
+    printf '%s
+' "$input"
   fi
 }
 
@@ -210,13 +163,15 @@ ask_hidden() {
 
   prompt_to_terminal "$prompt_text"
   prompt_read -rs input || return 1
-  prompt_to_terminal $'\n'
+  prompt_to_terminal $'
+'
   input="${input:-$default_value}"
 
   if [ -n "$var_name" ]; then
     printf -v "$var_name" '%s' "$input"
   else
-    printf '%s\n' "$input"
+    printf '%s
+' "$input"
   fi
 }
 
@@ -263,7 +218,8 @@ confirm() {
         ;;
       *)
         prompt_to_terminal "Please answer with 'y' or 'n'."
-        prompt_to_terminal $'\n'
+        prompt_to_terminal $'
+'
         ;;
     esac
   done
@@ -273,14 +229,6 @@ confirm() {
 die() {
   error "$*"
   exit 1
-}
-
-prepare_apt_environment() {
-  if ! command_exists apt-get; then
-    die "apt-get is required for this installer."
-  fi
-
-  export DEBIAN_FRONTEND=noninteractive
 }
 
   # === Validate IP4 helper
@@ -484,33 +432,29 @@ gather_configuration() {
     interactive=0
   fi
 
-  : "${MESH_ID:=natak_mesh}"
-  : "${IFACE:=wlan0}"
-  : "${WIRED_IFACE:=eth0}"
+  : "${MESH_ID:=MESHNODE}"
+  : "${IFACE:=wlan1}"
   : "${BATIF:=bat0}"
-  : "${IP_CIDR:=192.168.0.2/24}"
-  : "${COUNTRY:=US}"
-  : "${FREQ:=2462}"
+  : "${IP_CIDR:=192.168.0.1/24}"
+  : "${COUNTRY:=BE}"
+  : "${FREQ:=5180}"
   : "${BANDWIDTH:=HT20}"
   : "${MTU:=1532}"
   : "${BSSID:=02:12:34:56:78:9A}"
-  : "${AP_INTERFACE:=wlan1}"
-  : "${AP_SSID:=takNode1}"
-  : "${AP_PSK:=52235223}"
-  : "${AP_CHANNEL:=1}"
-  : "${AP_COUNTRY:=US}"
+  : "${AP_INTERFACE:=wlan0}"
+  : "${AP_SSID:=Node1}"
+  : "${AP_PSK:=SuperSecret123}"
+  : "${AP_CHANNEL:=6}"
+  : "${AP_COUNTRY:=BE}"
   : "${AP_IP_CIDR:=10.0.0.1/24}"
   : "${AP_DHCP_RANGE_START:=10.0.0.100}"
   : "${AP_DHCP_RANGE_END:=10.0.0.200}"
   : "${AP_DHCP_LEASE:=12h}"
-  : "${MESH_PSK:=52235223}"
-  : "${MESH_FWDING:=0}"
 
   if [ $interactive -eq 1 ]; then
     info "Gathering mesh configuration."
     ask "Mesh ID" "$MESH_ID" MESH_ID
     ask "Wireless interface" "$IFACE" IFACE
-    ask "Wired interface to bridge into \${BATIF} (type 'none' to skip)" "$WIRED_IFACE" WIRED_IFACE
     ask "batman-adv interface (bat)" "$BATIF" BATIF
     ask "Node IP/CIDR on ${BATIF}" "$IP_CIDR" IP_CIDR
     ask "Country code (regdom)" "$COUNTRY" COUNTRY
@@ -518,7 +462,6 @@ gather_configuration() {
     ask "Bandwidth" "$BANDWIDTH" BANDWIDTH
     ask "MTU for ${BATIF}" "$MTU" MTU
     ask "IBSS fallback BSSID" "$BSSID" BSSID
-    ask_hidden "Mesh SAE passphrase" "$MESH_PSK" MESH_PSK
     info "Gathering access point configuration."
     ask "Access point interface" "$AP_INTERFACE" AP_INTERFACE
     ask "Access point SSID" "$AP_SSID" AP_SSID
@@ -531,10 +474,6 @@ gather_configuration() {
     ask "Access point DHCP lease" "$AP_DHCP_LEASE" AP_DHCP_LEASE
   else
     info "Running in unattended mode; using configuration defaults for mesh."
-  fi
-
-  if [[ "${WIRED_IFACE,,}" = "none" ]]; then
-    WIRED_IFACE=""
   fi
 
   if ! validate_ipv4_cidr "$IP_CIDR"; then
@@ -571,14 +510,6 @@ gather_configuration() {
     die "Access point passphrase must be between 8 and 63 characters for WPA2 compatibility."
   fi
 
-  if ! validate_wpa_passphrase "$MESH_PSK"; then
-    die "Mesh passphrase must be between 8 and 63 characters."
-  fi
-
-  if ! [[ "$MESH_FWDING" =~ ^[01]$ ]]; then
-    die "Mesh forwarding flag '$MESH_FWDING' must be either 0 or 1."
-  fi
-
   if ! validate_dhcp_range "$AP_IP_CIDR" "$AP_DHCP_RANGE_START" "$AP_DHCP_RANGE_END"; then
     die "DHCP range $AP_DHCP_RANGE_START - $AP_DHCP_RANGE_END is not valid for subnet $AP_IP_CIDR."
   fi
@@ -592,10 +523,8 @@ gather_configuration() {
 
 update_system() {
   info "Starting operating system update and upgrade."
-  apt-get update || die "Failed to update package lists with apt-get."
-  apt-get -o Dpkg::Options::="--force-confdef" \
-    -o Dpkg::Options::="--force-confold" \
-    dist-upgrade -y || die "Failed to upgrade packages with apt-get."
+  apt-get update -y
+  apt-get -o Dpkg::Options::="--force-confdef"           -o Dpkg::Options::="--force-confold"           dist-upgrade -y
   info "Operating system update and upgrade complete."
 }
 
@@ -607,38 +536,21 @@ ensure_networkmanager_unmanages_interfaces() {
   local nm_conf_dir="/etc/NetworkManager/conf.d"
   local unmanaged_file="$nm_conf_dir/mesh-radio-unmanaged.conf"
   local -a interfaces=("$IFACE")
-  local -a unique_interfaces=()
-  local unmanaged_devices="" nm_iface interface_label="" added=""
-
-  if [ -n "${WIRED_IFACE:-}" ]; then
-    interfaces+=("$WIRED_IFACE")
-  fi
+  local unmanaged_devices="" nm_iface interface_label=""
 
   if [ -n "${AP_INTERFACE:-}" ] && [ "$AP_INTERFACE" != "$IFACE" ]; then
     interfaces+=("$AP_INTERFACE")
   fi
 
-  interfaces+=("wlan0" "wlan1" "eth0")
-
   install -d -m 0755 "$nm_conf_dir"
 
   for nm_iface in "${interfaces[@]}"; do
-    if [ -z "$nm_iface" ]; then
-      continue
+    if [ -n "$nm_iface" ]; then
+      if [ -n "$unmanaged_devices" ]; then
+        unmanaged_devices+=";"
+      fi
+      unmanaged_devices+="interface-name:${nm_iface}"
     fi
-
-    if [[ " $added " == *" $nm_iface "* ]]; then
-      continue
-    fi
-
-    added+=" $nm_iface"
-    unique_interfaces+=("$nm_iface")
-
-    if [ -n "$unmanaged_devices" ]; then
-      unmanaged_devices+=";"
-    fi
-
-    unmanaged_devices+="interface-name:${nm_iface}"
   done
 
   if [ -n "$unmanaged_devices" ]; then
@@ -647,13 +559,13 @@ ensure_networkmanager_unmanages_interfaces() {
 unmanaged-devices=$unmanaged_devices
 EOF
 
-    interface_label="${added# }"
+    interface_label="${interfaces[*]}"
     info "Configured NetworkManager to leave the following interfaces unmanaged: ${interface_label}."
   fi
 
   nmcli general reload || true
 
-  for nm_iface in "${unique_interfaces[@]}"; do
+  for nm_iface in "${interfaces[@]}"; do
     if [ -n "$nm_iface" ]; then
       nmcli device disconnect "$nm_iface" >/dev/null 2>&1 || true
       nmcli device set "$nm_iface" managed no >/dev/null 2>&1 || true
@@ -779,32 +691,6 @@ EOF
   fi
 }
 
-configure_mesh_wpa_supplicant() {
-  local wpa_dir="/etc/wpa_supplicant"
-  local wpa_conf="$wpa_dir/wpa_supplicant-${IFACE}.conf"
-
-  info "Configuring WPA supplicant for mesh interface ${IFACE}."
-
-  install -d -m 0755 -o root -g root "$wpa_dir"
-  install -m 0600 -o root -g root /dev/null "$wpa_conf"
-  cat >"$wpa_conf" <<EOF
-ctrl_interface=/var/run/wpa_supplicant
-update_config=1
-ap_scan=0
-country=$COUNTRY
-
-network={
-    ssid="$MESH_ID"
-    mode=5
-    frequency=$FREQ
-    key_mgmt=SAE
-    psk="$MESH_PSK"
-    mesh_fwding=$MESH_FWDING
-    ieee80211w=2
-}
-EOF
-}
-
   # === Installation B.A.T.M.A.N.-adv mesh-netwerk (bat0)
 setup_mesh_services() {
   info "Applying B.A.T.M.A.N. Adv insatalleation and configuration."
@@ -824,47 +710,25 @@ FREQ="$FREQ"
 BANDWIDTH="$BANDWIDTH"
 BSSID="$BSSID"
 IFACE="$IFACE"
-WIRED_IFACE="$WIRED_IFACE"
 COUNTRY="$COUNTRY"
 BATIF="$BATIF"
 MTU="$MTU"
 IP_CIDR="$IP_CIDR"
-WPA_CONF="/etc/wpa_supplicant/wpa_supplicant-\$IFACE.conf"
-WPA_SUPPLICANT_BIN="\$(command -v wpa_supplicant || true)"
-WPA_CLI_BIN="\$(command -v wpa_cli || true)"
-WPA_PID_FILE="/run/wpa_supplicant-\$IFACE.pid"
 
 mesh_supported() {
   iw list 2>/dev/null | awk '/Supported interface modes/{p=1} p{print} /Supported commands/{exit}' | grep -qi "mesh point"
 }
 
 mesh_up() {
-  local pid=""
   modprobe batman-adv
   iw reg set "\$COUNTRY" || true
   command -v nmcli >/dev/null 2>&1 && nmcli dev set "\$IFACE" managed no || true
-  if [ -n "\$WIRED_IFACE" ]; then
-    command -v nmcli >/dev/null 2>&1 && nmcli dev set "\$WIRED_IFACE" managed no || true
-  fi
 
   ip link set "\$IFACE" down || true
   if mesh_supported; then
     iw dev "\$IFACE" set type mp
     ip link set "\$IFACE" up
-    if [ -n "\$WPA_SUPPLICANT_BIN" ] && [ -f "\$WPA_CONF" ]; then
-      if [ -f "\$WPA_PID_FILE" ]; then
-        pid="\$(cat "\$WPA_PID_FILE")"
-        if ! kill -0 "\$pid" 2>/dev/null; then
-          rm -f "\$WPA_PID_FILE"
-        fi
-      fi
-      if [ ! -f "\$WPA_PID_FILE" ]; then
-        "\$WPA_SUPPLICANT_BIN" -B -i "\$IFACE" -c "\$WPA_CONF" -D nl80211 -P "\$WPA_PID_FILE"
-        sleep 1
-      fi
-    else
-      iw dev "\$IFACE" mesh join "\$MESH_ID" freq "\$FREQ" "\$BANDWIDTH"
-    fi
+    iw dev "\$IFACE" mesh join "\$MESH_ID" freq "\$FREQ" "\$BANDWIDTH"
   else
     iw dev "\$IFACE" set type ibss
     ip link set "\$IFACE" up
@@ -873,49 +737,21 @@ mesh_up() {
 
   batctl if add "\$IFACE" || true
   ip link set up dev "\$IFACE"
-  if [ -n "\$WIRED_IFACE" ]; then
-    ip link set "\$WIRED_IFACE" up || true
-    batctl if add "\$WIRED_IFACE" || true
-    ip link set up dev "\$WIRED_IFACE" || true
-  fi
   ip link set up dev "\$BATIF"
   ip link set dev "\$BATIF" mtu "\$MTU" || true
   ip addr add "\$IP_CIDR" dev "\$BATIF" || true
 }
 
 mesh_down() {
-  local pid=""
   ip addr flush dev "\$BATIF" || true
   ip link set "\$BATIF" down || true
   batctl if del "\$IFACE" 2>/dev/null || true
-  if [ -n "\$WIRED_IFACE" ]; then
-    batctl if del "\$WIRED_IFACE" 2>/dev/null || true
-    ip link set "\$WIRED_IFACE" down || true
-  fi
-  if [ -n "\$WPA_SUPPLICANT_BIN" ] && [ -f "\$WPA_CONF" ]; then
-    if [ -n "\$WPA_CLI_BIN" ]; then
-      "\$WPA_CLI_BIN" -i "\$IFACE" terminate 2>/dev/null || true
-    fi
-    if [ -f "\$WPA_PID_FILE" ]; then
-      pid="\$(cat "\$WPA_PID_FILE")"
-      if [ -n "\$pid" ]; then
-        kill "\$pid" 2>/dev/null || true
-      fi
-      rm -f "\$WPA_PID_FILE"
-    else
-      pkill -f "wpa_supplicant.*\$IFACE" 2>/dev/null || true
-    fi
-  fi
   iw dev "\$IFACE" mesh leave 2>/dev/null || true
   ip link set "\$IFACE" down || true
 }
 
 mesh_status() {
-  local match="\$IFACE|\$BATIF"
-  if [ -n "\$WIRED_IFACE" ]; then
-    match="\$match|\$WIRED_IFACE"
-  fi
-  echo "== Interfaces =="; ip -br link | grep -E "\$match" || true
+  echo "== Interfaces =="; ip -br link | grep -E "\$IFACE|\$BATIF" || true
   echo "== batctl if =="; batctl if || true
   echo "== originators =="; batctl -m "\$BATIF" o 2>/dev/null || true
   echo "== neighbors =="; batctl n 2>/dev/null || true
@@ -1098,7 +934,6 @@ install_packages() {
     hostapd
     dnsmasq
     nftables
-    wpa_supplicant
   )
 
   info "Starting package installation."
@@ -1128,7 +963,6 @@ install_packages() {
 # === Main installation sequence ========================================================
 main() {
   parse_cli_args "$@"
-  verify_supported_os
 
   if [[ $EUID -ne 0 ]]; then
     error "This installer must be run as root."
@@ -1136,7 +970,6 @@ main() {
   fi
 
   ensure_logfile
-  prepare_apt_environment
 
   info "================================================="
   info "===                                           ==="
@@ -1152,7 +985,6 @@ main() {
   update_system
   install_packages
   configure_access_point
-  configure_mesh_wpa_supplicant
   setup_mesh_services
   install_reticulum_services
   configure_log_rotation
