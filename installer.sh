@@ -532,7 +532,7 @@ gather_configuration() {
 update_system() {
   info "Starting operating system update and upgrade."
   apt-get update -y
-  apt-get -o Dpkg::Options::="--force-confdef"           -o Dpkg::Options::="--force-confold"           dist-upgrade -y
+  apt-get upgrade -y
   info "Operating system update and upgrade complete."
 }
 
