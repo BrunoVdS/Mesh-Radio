@@ -241,106 +241,74 @@ die() {
 
   # === Validate IP4 helper
 validate_ipv4_cidr() {
-  local cidr="$1" ip prefix o1 o2 o3 o4 octet
+  local cidr="$1"
+  python3 - "$cidr" <<'PY'
+import ipaddress
+import sys
 
-  [[ "$cidr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]{1,2})$ ]] || return 1
+try:
+    network = ipaddress.ip_network(sys.argv[1], strict=False)
+except ValueError:
+    sys.exit(1)
 
-  IFS=/ read -r ip prefix <<<"$cidr"
-  IFS=. read -r o1 o2 o3 o4 <<<"$ip"
-
-  for octet in "$o1" "$o2" "$o3" "$o4"; do
-    if ! [[ "$octet" =~ ^[0-9]+$ ]] || [ "$octet" -lt 0 ] || [ "$octet" -gt 255 ]; then
-      return 1
-    fi
-  done
-
-  if ! [[ "$prefix" =~ ^[0-9]+$ ]] || [ "$prefix" -lt 0 ] || [ "$prefix" -gt 32 ]; then
-    return 1
-  fi
-
-  return 0
+if network.version != 4:
+    sys.exit(1)
+PY
 }
 
 validate_ipv4_address() {
-  local ip="$1" o1 o2 o3 o4 octet
+  local ip="$1"
+  python3 - "$ip" <<'PY'
+import ipaddress
+import sys
 
-  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+try:
+    addr = ipaddress.ip_address(sys.argv[1])
+except ValueError:
+    sys.exit(1)
 
-  IFS=. read -r o1 o2 o3 o4 <<<"$ip"
-
-  for octet in "$o1" "$o2" "$o3" "$o4"; do
-    if ! [[ "$octet" =~ ^[0-9]+$ ]] || [ "$octet" -lt 0 ] || [ "$octet" -gt 255 ]; then
-      return 1
-    fi
-  done
-
-  return 0
-}
-
-ipv4_to_int() {
-  local ip="$1" o1 o2 o3 o4
-  IFS=. read -r o1 o2 o3 o4 <<<"$ip"
-  printf '%u' $(( (o1 << 24) + (o2 << 16) + (o3 << 8) + o4 ))
-}
-
-cidr_network_int() {
-  local cidr="$1" ip prefix mask
-  IFS=/ read -r ip prefix <<<"$cidr"
-  if [ "$prefix" -eq 0 ]; then
-    mask=0
-  else
-    mask=$(( (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF ))
-  fi
-  printf '%u' $(( $(ipv4_to_int "$ip") & mask ))
-}
-
-cidr_hostmask_int() {
-  local cidr="$1" prefix
-  IFS=/ read -r _ prefix <<<"$cidr"
-  if [ "$prefix" -eq 32 ]; then
-    printf '%u' 0
-  elif [ "$prefix" -eq 0 ]; then
-    printf '%u' $((0xFFFFFFFF))
-  else
-    printf '%u' $(( (1 << (32 - prefix)) - 1 ))
-  fi
-}
-
-is_ip_in_cidr() {
-  local ip="$1" cidr="$2" ip_int network hostmask min max
-  ip_int=$(ipv4_to_int "$ip")
-  network=$(cidr_network_int "$cidr")
-  hostmask=$(cidr_hostmask_int "$cidr")
-  min=$network
-  max=$(( network + hostmask ))
-  [ "$ip_int" -ge "$min" ] && [ "$ip_int" -le "$max" ]
+if addr.version != 4:
+    sys.exit(1)
+PY
 }
 
 ip_in_range() {
   local ip="$1" start="$2" end="$3"
-  local ip_int start_int end_int
-  ip_int=$(ipv4_to_int "$ip")
-  start_int=$(ipv4_to_int "$start")
-  end_int=$(ipv4_to_int "$end")
-  [ "$ip_int" -ge "$start_int" ] && [ "$ip_int" -le "$end_int" ]
+  python3 - "$ip" "$start" "$end" <<'PY'
+import ipaddress
+import sys
+
+try:
+    ip, start, end = (ipaddress.ip_address(arg) for arg in sys.argv[1:4])
+except ValueError:
+    sys.exit(1)
+
+sys.exit(0 if int(start) <= int(ip) <= int(end) else 1)
+PY
 }
 
 validate_dhcp_range() {
   local cidr="$1" start="$2" end="$3"
-  local start_int end_int
+  python3 - "$cidr" "$start" "$end" <<'PY'
+import ipaddress
+import sys
 
-  if ! validate_ipv4_address "$start" || ! validate_ipv4_address "$end"; then
-    return 1
-  fi
+try:
+    network = ipaddress.ip_network(sys.argv[1], strict=False)
+    start = ipaddress.ip_address(sys.argv[2])
+    end = ipaddress.ip_address(sys.argv[3])
+except ValueError:
+    sys.exit(1)
 
-  if ! is_ip_in_cidr "$start" "$cidr" || ! is_ip_in_cidr "$end" "$cidr"; then
-    return 1
-  fi
+if network.version != 4 or start.version != 4 or end.version != 4:
+    sys.exit(1)
 
-  start_int=$(ipv4_to_int "$start")
-  end_int=$(ipv4_to_int "$end")
+if start not in network or end not in network:
+    sys.exit(1)
 
-  [ "$start_int" -le "$end_int" ]
+if int(start) > int(end):
+    sys.exit(1)
+PY
 }
 
 validate_wpa_passphrase() {
