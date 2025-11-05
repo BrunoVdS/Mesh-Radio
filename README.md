@@ -19,21 +19,44 @@ The installer reads default values from `/etc/default/mesh.conf`. Use the
 different configuration file. An example configuration containing the
 current defaults is available in `mesh-settings.conf.example`.
 
-## Creating a full mesh
-We are creating a complete mesh using all network interfaces at hand.
-Mesh is created on bat0 using wlan1, and we are routing in the access point wlan0 and the internet eth0 in to the mesh by using routing.
+## Topology overview
 
-### B.A.T.M.A.N. Advanced mesh (bat0, wlan1) 
-Creating a mesh network called bat0 and adding wlan 1 to the mesh.
+By default the installer configures:
 
-## Access point (wlan0)
-Access point for EUD and othe devices to connect to the Raspberry Pi.
-  IP: 10.0.0.1/24
+* `wlan1` as the radio that joins the B.A.T.M.A.N. Adv mesh (`bat0`).
+* `wlan0` as a stand-alone access point on a separate subnet (`10.0.0.0/24`).
+* `meshctl` as a systemd-managed helper that brings the mesh online on boot.
 
-DHCP IP range for devices: 10.0.0.100-200
+The new topology extensions make it possible to mix and match multiple connectivity strategies without editing the scripts by hand.
 
-## Internet access
-Eth0 is routed in to the mesh and if one node (or more) has internet access on their eth0 hardware the mesh has internet connection.
+### Wired interfaces inside the mesh backbone
+
+Set `BAT_WIRED_INTERFACES="eth0"` (or a space-separated list) in your `mesh.conf` before running the installer. Every interface listed there is added to `bat0` during `meshctl up`, so wired peers participate in the same Layer 2 domain as the wireless mesh. This is the easiest way to have Ethernet nodes share the mesh broadcast domain.
+
+### Bridging the access point onto the mesh
+
+To make `wlan0` clients appear directly on the mesh, enable bridging:
+
+```ini
+ENABLE_AP_BRIDGE="yes"
+BRIDGE_NAME="br-mesh"
+# Optional: override the management IP assigned to the bridge
+BRIDGE_IP_CIDR="192.168.0.2/24"
+```
+
+When bridging is enabled, `meshctl` automatically creates the Linux bridge, enslaves `bat0` and the access-point interface, applies Spanning Tree (with `BRIDGE_STP=on` by default), and assigns the effective IP address to the bridge. DHCP and DNS services are reconfigured to bind to the bridge so that clients obtain addresses on the mesh network.
+
+### Routed/NAT gateway access point
+
+Leave `ENABLE_AP_BRIDGE="no"` to keep the access point on an isolated subnet. You can still forward traffic into the mesh (or other uplinks) by configuring the new routing controls:
+
+```ini
+AP_ROUTING_MODE="route"      # or "nat"
+AP_ROUTING_PEERS="bat0 eth0" # interfaces that should receive forwarded traffic
+AP_ROUTING_NAT_EGRESS="eth0" # required when AP_ROUTING_MODE=nat
+```
+
+`meshctl` enables IP forwarding when routing is active, installs the necessary `iptables` forwarding rules, and optionally adds a MASQUERADE rule for NAT. Routing and bridging modes are mutually exclusive, and the installer will stop if both are requested at once.
 
 ## Reticulum
 
