@@ -19,33 +19,35 @@ The installer reads default values from `/etc/default/mesh.conf`. Use the
 different configuration file. An example configuration containing the
 current defaults is available in `mesh-settings.conf.example`.
 
-## Creating a full mesh
-We are creating a complete mesh using all network interfaces at hand.
-Mesh is created on bat0 using wlan1, and we are routing in the access point wlan0 and the internet eth0 in to the mesh by using routing.
+## Mesh topology options
 
-### B.A.T.M.A.N. Advanced mesh (bat0, wlan1) 
-Creating a mesh network called bat0 and adding wlan 1 to the mesh.
+Version 1.0 ships with flexible topology controls that mirror the common
+deployment patterns used in community mesh networks:
 
-## Access point (wlan0)
-Access point for EUD and othe devices to connect to the Raspberry Pi.
-  IP: 10.0.0.1/24
+* **Backbone expansion over Ethernet.** Set `JOIN_ETH_TO_MESH="yes"` in
+  `mesh.conf` (or answer *yes* during the installer prompts) to add your
+  wired uplink (default `eth0`) into the B.A.T.M.A.N. Adv domain. Wired
+  peers then appear as native mesh participants on `bat0`.
+* **Client network modes.** The `CLIENT_NETWORK_MODE` toggle accepts
+  `bridge`, `routed`, or `nat`:
+  * `bridge` attaches the access point (`wlan0`) to a new Linux bridge
+    (default `br-mesh`) along with `bat0`, carries DHCP and STP on the
+    bridge, and transparently drops Wi-Fi clients onto the mesh backbone.
+  * `routed` retains the default subnet separation between the access
+    point and the mesh for environments that prefer explicit routing.
+  * `nat` enables nftables-based masquerading from the access point
+    toward both the mesh (`bat0`) and wired LAN (`eth0`) while turning on
+    IPv4/IPv6 forwarding.
+* **Bridge hardening.** When bridge mode is used, `BRIDGE_ENABLE_STP`
+  and `BRIDGE_VLAN_FILTERING` map directly to 802.1D spanning-tree and
+  VLAN-filtering controls, helping prevent L2 loops.
+* **Reticulum multi-interface support.** `RETICULUM_INTERFACES`
+  generates `AutoInterface` blocks for each listed device (defaults to
+  `bat0,eth0,wlan0`), while `RETICULUM_DISCOVERY` toggles path discovery
+  for those links in the generated `rnsd` configuration.
 
-DHCP IP range for devices: 10.0.0.100-200
-
-## Internet access
-Eth0 is routed in to the mesh and if one node (or more) has internet access on their eth0 hardware the mesh has internet connection.
-
-## Reticulum
-
-
-### Nomad Network
-
-
-### MeshChat
-
-
-### Sideband
-
-
-## Access Point
+The installer still provisions `wlan1` as the mesh radio, `bat0` as the
+layer-2 mesh device, and `wlan0` as the local access point, but the
+controls above make it easy to mix bridging, routing, and NAT without
+editing service files by hand.
 

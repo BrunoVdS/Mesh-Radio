@@ -74,6 +74,33 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+to_lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+is_truthy() {
+  local value
+  value=$(to_lower "${1:-}")
+  case "$value" in
+    1|y|yes|true|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+trim_string() {
+  local str="$1"
+  # shellcheck disable=SC2001
+  str=$(printf '%s' "$str" | sed -e 's/^\s\+//' -e 's/\s\+$//')
+  printf '%s' "$str"
+}
+
+sanitize_block_name() {
+  local name="$1"
+  name=$(printf '%s' "$name" | tr '[:space:]' '_')
+  name=$(printf '%s' "$name" | tr -c '[:alnum:]_-' '_')
+  printf '%s' "$name"
+}
+
   # === Defining attended of unattended install helpers
 usage() {
   cat <<USAGE
@@ -384,7 +411,11 @@ log_installation_summary() {
     info "batctl detailed version: $(batctl -v | head -n1)"
   fi
 
-  log_service_status mesh rnsd
+  if [ "$CLIENT_NETWORK_MODE" = "nat" ]; then
+    log_service_status mesh mesh-nft rnsd
+  else
+    log_service_status mesh rnsd
+  fi
 }
 
   # === Check if the logfile exists
@@ -426,6 +457,14 @@ gather_configuration() {
   : "${AP_DHCP_RANGE_START:=10.0.0.100}"
   : "${AP_DHCP_RANGE_END:=10.0.0.200}"
   : "${AP_DHCP_LEASE:=12h}"
+  : "${JOIN_ETH_TO_MESH:=no}"
+  : "${ETH_INTERFACE:=eth0}"
+  : "${CLIENT_NETWORK_MODE:=routed}"
+  : "${BRIDGE_NAME:=br-mesh}"
+  : "${BRIDGE_ENABLE_STP:=yes}"
+  : "${BRIDGE_VLAN_FILTERING:=no}"
+  : "${RETICULUM_INTERFACES:=${BATIF}}"
+  : "${RETICULUM_DISCOVERY:=yes}"
 
   if [ $interactive -eq 1 ]; then
     info "Gathering mesh configuration."
@@ -448,6 +487,18 @@ gather_configuration() {
     ask "Access point DHCP range start" "$AP_DHCP_RANGE_START" AP_DHCP_RANGE_START
     ask "Access point DHCP range end" "$AP_DHCP_RANGE_END" AP_DHCP_RANGE_END
     ask "Access point DHCP lease" "$AP_DHCP_LEASE" AP_DHCP_LEASE
+    ask "Join wired interface to B.A.T.M.A.N. mesh? (yes/no)" "$JOIN_ETH_TO_MESH" JOIN_ETH_TO_MESH
+    if is_truthy "$JOIN_ETH_TO_MESH"; then
+      ask "Ethernet interface to join" "$ETH_INTERFACE" ETH_INTERFACE
+    fi
+    ask "Client network mode (bridge/routed/nat)" "$CLIENT_NETWORK_MODE" CLIENT_NETWORK_MODE
+    if [ "$(to_lower "$CLIENT_NETWORK_MODE")" = "bridge" ]; then
+      ask "Bridge name for client access" "$BRIDGE_NAME" BRIDGE_NAME
+      ask "Enable STP on bridge? (yes/no)" "$BRIDGE_ENABLE_STP" BRIDGE_ENABLE_STP
+      ask "Enable VLAN filtering on bridge? (yes/no)" "$BRIDGE_VLAN_FILTERING" BRIDGE_VLAN_FILTERING
+    fi
+    ask "Reticulum interfaces (comma separated)" "$RETICULUM_INTERFACES" RETICULUM_INTERFACES
+    ask "Enable Reticulum discovery across interfaces? (yes/no)" "$RETICULUM_DISCOVERY" RETICULUM_DISCOVERY
   else
     info "Running in unattended mode; using configuration defaults for mesh."
   fi
@@ -494,6 +545,26 @@ gather_configuration() {
     die "Access point IP '$AP_IP_ADDRESS' overlaps with the DHCP range."
   fi
 
+  CLIENT_NETWORK_MODE=$(to_lower "$CLIENT_NETWORK_MODE")
+  case "$CLIENT_NETWORK_MODE" in
+    bridge|routed|nat) ;;
+    *)
+      die "Client network mode '$CLIENT_NETWORK_MODE' is not supported. Choose bridge, routed, or nat."
+      ;;
+  esac
+
+  if is_truthy "$JOIN_ETH_TO_MESH"; then
+    if [ -z "$ETH_INTERFACE" ]; then
+      die "Ethernet interface cannot be empty when joining the mesh."
+    fi
+  fi
+
+  if [ "$CLIENT_NETWORK_MODE" = "bridge" ]; then
+    if [ -z "$BRIDGE_NAME" ]; then
+      die "Bridge name cannot be empty in bridge mode."
+    fi
+  fi
+
   INTERACTIVE_MODE=$interactive
 }
 
@@ -516,6 +587,10 @@ ensure_networkmanager_unmanages_interfaces() {
 
   if [ -n "${AP_INTERFACE:-}" ] && [ "$AP_INTERFACE" != "$IFACE" ]; then
     interfaces+=("$AP_INTERFACE")
+  fi
+
+  if is_truthy "$JOIN_ETH_TO_MESH" && [ -n "${ETH_INTERFACE:-}" ]; then
+    interfaces+=("$ETH_INTERFACE")
   fi
 
   install -d -m 0755 "$nm_conf_dir"
@@ -553,12 +628,23 @@ configure_access_point() {
   local hw_mode="g" hostapd_conf="/etc/hostapd/hostapd.conf" dnsmasq_conf="/etc/dnsmasq.d/mesh-ap.conf"
   local default_hostapd="/etc/default/hostapd" ip_setup_script="/usr/local/sbin/mesh-ap-setup"
   local ip_service="/etc/systemd/system/mesh-ap-ip.service" ap_ip="$AP_IP_ADDRESS"
+  local network_mode="$CLIENT_NETWORK_MODE" bridge_name="$BRIDGE_NAME"
+  local hostapd_bridge_directive="" dhcp_interface="$AP_INTERFACE"
+  local bridging_enabled=0 stp_setting=$(to_lower "$BRIDGE_ENABLE_STP") vlan_setting=$(to_lower "$BRIDGE_VLAN_FILTERING")
 
   if [ "$AP_CHANNEL" -gt 14 ]; then
     hw_mode="a"
   fi
 
-  info "Configuring Wi-Fi access point on ${AP_INTERFACE} with static address ${AP_IP_CIDR}."
+  if [ "$network_mode" = "bridge" ]; then
+    hostapd_bridge_directive="bridge=$bridge_name"
+    dhcp_interface="$bridge_name"
+    ip_assignment_target="$bridge_name"
+    bridging_enabled=1
+    info "Configuring Wi-Fi access point on ${AP_INTERFACE} with bridge ${bridge_name} using address ${AP_IP_CIDR}."
+  else
+    info "Configuring Wi-Fi access point on ${AP_INTERFACE} with static address ${AP_IP_CIDR}."
+  fi
 
   ensure_networkmanager_unmanages_interfaces
 
@@ -591,6 +677,10 @@ beacon_int=100
 ignore_broadcast_ssid=0
 EOF
 
+  if [ $bridging_enabled -eq 1 ]; then
+    printf '%s\n' "$hostapd_bridge_directive" >>"$hostapd_conf"
+  fi
+
   install -m 0644 -o root -g root /dev/null "$default_hostapd"
   cat >"$default_hostapd" <<EOF
 DAEMON_CONF="$hostapd_conf"
@@ -602,7 +692,7 @@ EOF
 
   install -m 0644 -o root -g root /dev/null "$dnsmasq_conf"
   cat >"$dnsmasq_conf" <<EOF
-interface=$AP_INTERFACE
+interface=$dhcp_interface
 bind-interfaces
 dhcp-range=$AP_DHCP_RANGE_START,$AP_DHCP_RANGE_END,$AP_DHCP_LEASE
 dhcp-option=option:router,$ap_ip
@@ -611,12 +701,17 @@ log-dhcp
 EOF
 
   install -m 0755 -o root -g root /dev/null "$ip_setup_script"
-  cat >"$ip_setup_script" <<EOF
+  if [ $bridging_enabled -eq 1 ]; then
+    cat >"$ip_setup_script" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
-interface="$AP_INTERFACE"
+ap_interface="$AP_INTERFACE"
+bat_interface="$BATIF"
+bridge_name="$bridge_name"
 cidr="$AP_IP_CIDR"
+stp_mode="$stp_setting"
+vlan_mode="$vlan_setting"
 
 ip_bin="$(command -v ip)"
 
@@ -625,17 +720,77 @@ if [ -z "\$ip_bin" ]; then
   exit 1
 fi
 
+if ! "\$ip_bin" link show "\$bridge_name" >/dev/null 2>&1; then
+  "\$ip_bin" link add name "\$bridge_name" type bridge
+fi
+
+if [ "\$stp_mode" = "yes" ] || [ "\$stp_mode" = "y" ]; then
+  "\$ip_bin" link set dev "\$bridge_name" type bridge stp_state 1 || true
+else
+  "\$ip_bin" link set dev "\$bridge_name" type bridge stp_state 0 || true
+fi
+
+if [ "\$vlan_mode" = "yes" ] || [ "\$vlan_mode" = "y" ]; then
+  "\$ip_bin" link set dev "\$bridge_name" type bridge vlan_filtering 1 || true
+else
+  "\$ip_bin" link set dev "\$bridge_name" type bridge vlan_filtering 0 || true
+fi
+
+"\$ip_bin" link set "\$ap_interface" down || true
+"\$ip_bin" link set "\$ap_interface" nomaster >/dev/null 2>&1 || true
+"\$ip_bin" addr flush dev "\$ap_interface" || true
+"\$ip_bin" link set "\$ap_interface" master "\$bridge_name"
+
+"\$ip_bin" link set "\$bat_interface" down || true
+"\$ip_bin" link set "\$bat_interface" nomaster >/dev/null 2>&1 || true
+"\$ip_bin" addr flush dev "\$bat_interface" || true
+"\$ip_bin" link set "\$bat_interface" master "\$bridge_name"
+
+"\$ip_bin" link set "\$bridge_name" up
+"\$ip_bin" link set "\$ap_interface" up
+"\$ip_bin" link set "\$bat_interface" up
+"\$ip_bin" address replace "\$cidr" dev "\$bridge_name"
+EOF
+  else
+    cat >"$ip_setup_script" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+interface="$AP_INTERFACE"
+cidr="$AP_IP_CIDR"
+bridge_name="$bridge_name"
+bat_interface="$BATIF"
+
+ip_bin="$(command -v ip)"
+
+if [ -z "\$ip_bin" ]; then
+  echo "ip command not found" >&2
+  exit 1
+fi
+
+if [ -n "\$bridge_name" ] && "\$ip_bin" link show "\$bridge_name" >/dev/null 2>&1; then
+  "\$ip_bin" link set "\$bridge_name" down || true
+fi
+
+if [ -n "\$bridge_name" ] && "\$ip_bin" link show "\$bridge_name" >/dev/null 2>&1; then
+  "\$ip_bin" link delete "\$bridge_name" type bridge || true
+fi
+
+"\$ip_bin" link set "\$interface" nomaster >/dev/null 2>&1 || true
+"\$ip_bin" link set "\$bat_interface" nomaster >/dev/null 2>&1 || true
+
 "\$ip_bin" link set "\$interface" up
 "\$ip_bin" address replace "\$cidr" dev "\$interface"
 EOF
+  fi
 
   install -m 0644 -o root -g root /dev/null "$ip_service"
   cat >"$ip_service" <<EOF
 [Unit]
 Description=Configure Mesh access point interface
-After=network-pre.target
+After=network-pre.target mesh.service
 Before=hostapd.service dnsmasq.service
-Wants=network-pre.target
+Wants=network-pre.target mesh.service
 
 [Service]
 Type=oneshot
@@ -667,6 +822,112 @@ EOF
   fi
 }
 
+configure_client_network_mode() {
+  local mode="$CLIENT_NETWORK_MODE" nft_dir="/etc/nftables.d"
+  local nft_rules="$nft_dir/mesh-radio.nft"
+  local nft_setup_script="/usr/local/sbin/mesh-nft-setup"
+  local nft_service="/etc/systemd/system/mesh-nft.service"
+  local sysctl_file="/etc/sysctl.d/99-mesh-radio.conf"
+
+  mode=$(to_lower "$mode")
+
+  if [ "$mode" = "nat" ]; then
+    info "Enabling nftables NAT for ${AP_INTERFACE} clients towards mesh and wired networks."
+
+    install -d -m 0755 /etc/sysctl.d
+    cat >"$sysctl_file" <<'EOF'
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+EOF
+
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null
+    sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true
+
+    install -d -m 0755 "$nft_dir"
+    cat >"$nft_rules" <<EOF
+flush table inet mesh_radio
+table inet mesh_radio {
+  chain forward {
+    type filter hook forward priority 0;
+    policy accept;
+  }
+
+  chain postrouting {
+    type nat hook postrouting priority 100;
+    iifname "$AP_INTERFACE" oifname "$BATIF" masquerade
+EOF
+
+    if [ -n "$ETH_INTERFACE" ]; then
+      cat >>"$nft_rules" <<EOF
+    iifname "$AP_INTERFACE" oifname "$ETH_INTERFACE" masquerade
+EOF
+    fi
+
+    cat >>"$nft_rules" <<'EOF'
+  }
+}
+EOF
+
+    install -m 0755 -o root -g root /dev/null "$nft_setup_script"
+    cat >"$nft_setup_script" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+nft_rules_path="$nft_rules"
+nft_bin="$(command -v nft || true)"
+
+if [ -z "\$nft_bin" ]; then
+  echo "nft command not found" >&2
+  exit 1
+fi
+
+"\$nft_bin" -f "\$nft_rules_path"
+EOF
+
+    install -m 0644 -o root -g root /dev/null "$nft_service"
+    cat >"$nft_service" <<EOF
+[Unit]
+Description=Mesh Radio nftables configuration
+After=network-online.target
+Wants=network-online.target nftables.service
+
+[Service]
+Type=oneshot
+ExecStart=$nft_setup_script
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    if [ -n "$SYSTEMCTL" ]; then
+      $SYSTEMCTL daemon-reload
+      $SYSTEMCTL enable mesh-nft.service
+      $SYSTEMCTL restart mesh-nft.service || warn "Failed to load nftables rules immediately."
+    else
+      warn "systemctl not available; load nftables rules manually using $nft_setup_script."
+    fi
+  else
+    if [ -f "$nft_rules" ]; then
+      info "Removing nftables NAT configuration (client mode: $mode)."
+    fi
+    if [ -n "$SYSTEMCTL" ] && [ -f "$nft_service" ]; then
+      $SYSTEMCTL stop mesh-nft.service >/dev/null 2>&1 || true
+      $SYSTEMCTL disable mesh-nft.service >/dev/null 2>&1 || true
+    fi
+    rm -f "$nft_rules" "$nft_setup_script" "$nft_service"
+    if [ -f "$sysctl_file" ]; then
+      rm -f "$sysctl_file"
+    fi
+    if command_exists nft; then
+      nft delete table inet mesh_radio >/dev/null 2>&1 || true
+    fi
+    if [ -n "$SYSTEMCTL" ]; then
+      $SYSTEMCTL daemon-reload
+    fi
+  fi
+}
+
   # === Installation B.A.T.M.A.N.-adv mesh-netwerk (bat0)
 setup_mesh_services() {
   info "Applying B.A.T.M.A.N. Adv insatalleation and configuration."
@@ -690,6 +951,10 @@ COUNTRY="$COUNTRY"
 BATIF="$BATIF"
 MTU="$MTU"
 IP_CIDR="$IP_CIDR"
+JOIN_ETH_TO_MESH="$JOIN_ETH_TO_MESH"
+ETH_INTERFACE="$ETH_INTERFACE"
+CLIENT_NETWORK_MODE="$CLIENT_NETWORK_MODE"
+BRIDGE_NAME="$BRIDGE_NAME"
 
 mesh_supported() {
   iw list 2>/dev/null | awk '/Supported interface modes/{p=1} p{print} /Supported commands/{exit}' | grep -qi "mesh point"
@@ -715,7 +980,21 @@ mesh_up() {
   ip link set up dev "\$IFACE"
   ip link set up dev "\$BATIF"
   ip link set dev "\$BATIF" mtu "\$MTU" || true
-  ip addr add "\$IP_CIDR" dev "\$BATIF" || true
+  local mode="\${CLIENT_NETWORK_MODE,,}"
+  local join_eth="\${JOIN_ETH_TO_MESH,,}"
+
+  if [ "\$join_eth" = "yes" ] || [ "\$join_eth" = "y" ]; then
+    if [ -n "\$ETH_INTERFACE" ]; then
+      ip link set "\$ETH_INTERFACE" up || true
+      batctl if add "\$ETH_INTERFACE" || true
+    fi
+  fi
+
+  if [ "\$mode" != "bridge" ]; then
+    ip addr add "\$IP_CIDR" dev "\$BATIF" || true
+  else
+    ip addr flush dev "\$BATIF" || true
+  fi
 }
 
 mesh_down() {
@@ -724,6 +1003,13 @@ mesh_down() {
   batctl if del "\$IFACE" 2>/dev/null || true
   iw dev "\$IFACE" mesh leave 2>/dev/null || true
   ip link set "\$IFACE" down || true
+  local join_eth="\${JOIN_ETH_TO_MESH,,}"
+  if [ "\$join_eth" = "yes" ] || [ "\$join_eth" = "y" ]; then
+    if [ -n "\$ETH_INTERFACE" ]; then
+      batctl if del "\$ETH_INTERFACE" 2>/dev/null || true
+      ip link set "\$ETH_INTERFACE" down || true
+    fi
+  fi
 }
 
 mesh_status() {
@@ -733,6 +1019,11 @@ mesh_status() {
   echo "== neighbors =="; batctl n 2>/dev/null || true
   echo "== 802.11s mpath =="; iw dev "\$IFACE" mpath dump 2>/dev/null || true
   echo "== stations (IBSS) =="; iw dev "\$IFACE" station dump 2>/dev/null || true
+  local mode="\${CLIENT_NETWORK_MODE,,}"
+  if [ "\$mode" = "bridge" ] && [ -n "\$BRIDGE_NAME" ]; then
+    echo "== bridge (\$BRIDGE_NAME) =="; ip -br link show "\$BRIDGE_NAME" 2>/dev/null || true
+    bridge link show master "\$BRIDGE_NAME" 2>/dev/null || true
+  fi
 }
 
 case "\$CMD" in
@@ -775,6 +1066,25 @@ install_reticulum_services() {
   info "Applying Reticulum installation and configuration."
 
   local install_method="" rnsd_exec="" venv_parent="/opt/reticulum" venv_dir="$venv_parent/venv"
+  local discovery_flag="False"
+  if is_truthy "$RETICULUM_DISCOVERY"; then
+    discovery_flag="True"
+  fi
+
+  local -a retic_ifaces=() _retic_raw=()
+  local IFS=','
+  read -r -a _retic_raw <<<"$RETICULUM_INTERFACES"
+  for raw_iface in "${_retic_raw[@]}"; do
+    local trimmed
+    trimmed=$(trim_string "$raw_iface")
+    if [ -n "$trimmed" ]; then
+      retic_ifaces+=("$trimmed")
+    fi
+  done
+
+  if [ ${#retic_ifaces[@]} -eq 0 ]; then
+    retic_ifaces+=("$BATIF")
+  fi
 
   if command_exists apt-get && command_exists apt-cache; then
     local reticulum_candidate
@@ -862,6 +1172,20 @@ install_reticulum_services() {
     mode = gw
 
 EOF
+
+  local iface label
+  for iface in "${retic_ifaces[@]}"; do
+    label=$(sanitize_block_name "$iface-interface")
+    cat >>"$config_path/config" <<EOF
+  [[${label}]]
+    type = AutoInterface
+    interface_enabled = True
+    ifname = $iface
+    mode = full
+    discover = $discovery_flag
+
+EOF
+  done
 
   chown "$service_user":"$service_group" "$config_path/config"
   chmod 0640 "$config_path/config"
@@ -1001,6 +1325,7 @@ main() {
   update_system
   install_packages
   configure_access_point
+  configure_client_network_mode
   setup_mesh_services
   install_reticulum_services
   configure_log_rotation
