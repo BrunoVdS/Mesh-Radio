@@ -806,23 +806,62 @@ EOF
 install_reticulum_services() {
   info "Applying Reticulum installation and configuration."
 
-  if ! python3 -m pip install --upgrade --break-system-packages rns; then
-    die "Failed to install Reticulum (pip install rns)."
+  local install_method="" rnsd_exec="" venv_parent="/opt/reticulum" venv_dir="$venv_parent/venv"
+
+  if command_exists apt-get && command_exists apt-cache; then
+    local reticulum_candidate
+    reticulum_candidate=$(apt-cache policy reticulum 2>/dev/null | awk '/Candidate:/ {print $2}')
+    if [ -n "$reticulum_candidate" ] && [ "$reticulum_candidate" != "(none)" ]; then
+      info "Installing Reticulum from distribution package (reticulum)."
+      if apt-get install -y --no-install-recommends reticulum; then
+        install_method="apt"
+      else
+        warn "Failed to install the 'reticulum' package; falling back to isolated Python environment."
+      fi
+    else
+      info "Reticulum package not available from configured repositories; using isolated Python environment."
+    fi
   fi
 
-  if ! python3 -m pip show rns >/dev/null 2>&1; then
-    die "Reticulum installation could not be verified."
-  fi
+  if [ "$install_method" != "apt" ]; then
+    install -d -m 0755 -o root -g root "$venv_parent"
+    info "Creating isolated Python environment for Reticulum at $venv_dir."
+    if ! python3 -m venv --upgrade-deps "$venv_dir" >/dev/null 2>&1; then
+      warn "Python venv module does not support --upgrade-deps; retrying without it."
+      if ! python3 -m venv "$venv_dir"; then
+        die "Failed to create Python virtual environment for Reticulum."
+      fi
+    fi
 
-  local scripts_dir rnsd_exec
-  scripts_dir=$(python3 -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2>/dev/null || true)
-  if [ -n "$scripts_dir" ] && [ -x "$scripts_dir/rnsd" ]; then
-    rnsd_exec="$scripts_dir/rnsd"
+    if ! "$venv_dir/bin/pip" install --upgrade pip setuptools wheel; then
+      warn "Failed to upgrade packaging tools inside the Reticulum virtual environment."
+    fi
+
+    if ! "$venv_dir/bin/pip" install --upgrade rns; then
+      die "Failed to install Reticulum (virtual environment pip install rns)."
+    fi
+
+    if ! "$venv_dir/bin/python3" -m pip show rns >/dev/null 2>&1; then
+      die "Reticulum installation in virtual environment could not be verified."
+    fi
+
+    rnsd_exec="$venv_dir/bin/rnsd"
   else
+    if ! dpkg -s reticulum >/dev/null 2>&1; then
+      die "Reticulum distribution package installation could not be verified."
+    fi
+
     rnsd_exec=$(command -v rnsd || true)
+    if [ -z "$rnsd_exec" ]; then
+      local scripts_dir
+      scripts_dir=$(python3 -c "import sysconfig; print(sysconfig.get_path('scripts'))" 2>/dev/null || true)
+      if [ -n "$scripts_dir" ] && [ -x "$scripts_dir/rnsd" ]; then
+        rnsd_exec="$scripts_dir/rnsd"
+      fi
+    fi
   fi
 
-  if [ -z "$rnsd_exec" ]; then
+  if [ -z "$rnsd_exec" ] || [ ! -x "$rnsd_exec" ]; then
     die "Unable to locate rnsd executable after installation."
   fi
 
@@ -935,6 +974,7 @@ install_packages() {
     nano
     batctl
     python3
+    python3-venv
     python3-pip
     python3-cryptography
     python3-serial
