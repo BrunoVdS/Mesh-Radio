@@ -774,7 +774,9 @@ EOF
 install_reticulum_services() {
   info "Applying Reticulum installation and configuration."
 
-  local install_method="" rnsd_exec="" venv_parent="/opt/reticulum" venv_dir="$venv_parent/venv"
+  local install_method="" rnsd_exec=""
+  local venv_parent="/opt/reticulum"
+  local venv_dir="$venv_parent/venv"
 
   if command_exists apt-get && command_exists apt-cache; then
     local reticulum_candidate
