@@ -801,45 +801,45 @@ iptables_add() {
     warn "iptables not available; skipping firewall rule addition"
     return 0
   fi
-  local table="$1"; shift
-  local chain="$1"; shift
-  local -a rule=("$@")
+  local table="\$1"; shift
+  local chain="\$1"; shift
+  local -a rule=("\$@")
   local -a check=(iptables)
-  if [ "$table" != "filter" ]; then
-    check+=(-t "$table")
+  if [ "\$table" != "filter" ]; then
+    check+=(-t "\$table")
   fi
-  check+=(-C "$chain")
-  check+=("${rule[@]}")
-  if ! "${check[@]}" >/dev/null 2>&1; then
+  check+=(-C "\$chain")
+  check+=("\${rule[@]}")
+  if ! "\${check[@]}" >/dev/null 2>&1; then
     local -a add=(iptables)
-    if [ "$table" != "filter" ]; then
-      add+=(-t "$table")
+    if [ "\$table" != "filter" ]; then
+      add+=(-t "\$table")
     fi
-    add+=(-A "$chain")
-    add+=("${rule[@]}")
-    if ! "${add[@]}" >/dev/null 2>&1; then
-      warn "Failed to add iptables rule to $chain (${rule[*]})"
+    add+=(-A "\$chain")
+    add+=("\${rule[@]}")
+    if ! "\${add[@]}" >/dev/null 2>&1; then
+      warn "Failed to add iptables rule to \$chain (\${rule[*]})"
     fi
   fi
 }
 
 iptables_delete() {
   have_iptables || return 0
-  local table="$1"; shift
-  local chain="$1"; shift
-  local -a rule=("$@")
+  local table="\$1"; shift
+  local chain="\$1"; shift
+  local -a rule=("\$@")
   local -a check=(iptables)
-  if [ "$table" != "filter" ]; then
-    check+=(-t "$table")
+  if [ "\$table" != "filter" ]; then
+    check+=(-t "\$table")
   fi
   local -a delete=(iptables)
-  if [ "$table" != "filter" ]; then
-    delete+=(-t "$table")
+  if [ "\$table" != "filter" ]; then
+    delete+=(-t "\$table")
   fi
-  delete+=(-D "$chain")
-  delete+=("${rule[@]}")
-  while "${check[@]}" -C "$chain" "${rule[@]}" >/dev/null 2>&1; do
-    if ! "${delete[@]}" >/dev/null 2>&1; then
+  delete+=(-D "\$chain")
+  delete+=("\${rule[@]}")
+  while "\${check[@]}" -C "\$chain" "\${rule[@]}" >/dev/null 2>&1; do
+    if ! "\${delete[@]}" >/dev/null 2>&1; then
       break
     fi
   done
@@ -848,19 +848,19 @@ iptables_delete() {
 join_wired_interfaces_up() {
   local dev
   for dev in $BAT_WIRED_INTERFACES; do
-    [ -n "$dev" ] || continue
-    ip link set "$dev" down >/dev/null 2>&1 || true
-    batctl if add "$dev" >/dev/null 2>&1 || true
-    ip link set "$dev" up >/dev/null 2>&1 || true
+    [ -n "\$dev" ] || continue
+    ip link set "\$dev" down >/dev/null 2>&1 || true
+    batctl if add "\$dev" >/dev/null 2>&1 || true
+    ip link set "\$dev" up >/dev/null 2>&1 || true
   done
 }
 
 join_wired_interfaces_down() {
   local dev
   for dev in $BAT_WIRED_INTERFACES; do
-    [ -n "$dev" ] || continue
-    batctl if del "$dev" >/dev/null 2>&1 || true
-    ip link set "$dev" down >/dev/null 2>&1 || true
+    [ -n "\$dev" ] || continue
+    batctl if del "\$dev" >/dev/null 2>&1 || true
+    ip link set "\$dev" down >/dev/null 2>&1 || true
   done
 }
 
@@ -871,28 +871,28 @@ configure_bridge_up() {
 
   local br="$BRIDGE_NAME" stp_state=0 cidr="$AP_EFFECTIVE_CIDR"
 
-  ip link show "$br" >/dev/null 2>&1 || ip link add name "$br" type bridge
+  ip link show "\$br" >/dev/null 2>&1 || ip link add name "\$br" type bridge
 
   if [ "$BRIDGE_STP" = "on" ]; then
     stp_state=1
   fi
 
-  ip link set "$br" type bridge stp_state "$stp_state" >/dev/null 2>&1 || true
+  ip link set "\$br" type bridge stp_state "\$stp_state" >/dev/null 2>&1 || true
   ip addr flush dev "$BATIF" >/dev/null 2>&1 || true
   ip link set "$BATIF" up >/dev/null 2>&1 || true
-  ip link set "$BATIF" master "$br" >/dev/null 2>&1 || true
+  ip link set "$BATIF" master "\$br" >/dev/null 2>&1 || true
 
   if [ -n "$AP_INTERFACE" ]; then
     ip link set "$AP_INTERFACE" down >/dev/null 2>&1 || true
     ip addr flush dev "$AP_INTERFACE" >/dev/null 2>&1 || true
-    ip link set "$AP_INTERFACE" master "$br" >/dev/null 2>&1 || true
+    ip link set "$AP_INTERFACE" master "\$br" >/dev/null 2>&1 || true
     ip link set "$AP_INTERFACE" up >/dev/null 2>&1 || true
   fi
 
-  ip link set "$br" up >/dev/null 2>&1 || true
+  ip link set "\$br" up >/dev/null 2>&1 || true
 
-  if [ -n "$cidr" ]; then
-    ip addr replace "$cidr" dev "$br" >/dev/null 2>&1 || true
+  if [ -n "\$cidr" ]; then
+    ip addr replace "\$cidr" dev "\$br" >/dev/null 2>&1 || true
   fi
 }
 
@@ -908,9 +908,9 @@ configure_bridge_down() {
   fi
 
   ip link set "$BATIF" nomaster >/dev/null 2>&1 || true
-  ip addr flush dev "$br" >/dev/null 2>&1 || true
-  ip link set "$br" down >/dev/null 2>&1 || true
-  ip link delete "$br" type bridge >/dev/null 2>&1 || true
+  ip addr flush dev "\$br" >/dev/null 2>&1 || true
+  ip link set "\$br" down >/dev/null 2>&1 || true
+  ip link delete "\$br" type bridge >/dev/null 2>&1 || true
 }
 
 configure_routing_up() {
@@ -927,9 +927,9 @@ configure_routing_up() {
 
   local peer
   for peer in $AP_ROUTING_PEERS; do
-    [ -n "$peer" ] || continue
-    iptables_add filter FORWARD -i "$AP_INTERFACE" -o "$peer" -j ACCEPT
-    iptables_add filter FORWARD -i "$peer" -o "$AP_INTERFACE" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    [ -n "\$peer" ] || continue
+    iptables_add filter FORWARD -i "$AP_INTERFACE" -o "\$peer" -j ACCEPT
+    iptables_add filter FORWARD -i "\$peer" -o "$AP_INTERFACE" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
   done
 
   if [ "$AP_ROUTING_MODE" = "nat" ] && [ -n "$AP_ROUTING_NAT_EGRESS" ]; then
@@ -944,9 +944,9 @@ configure_routing_down() {
 
   local peer
   for peer in $AP_ROUTING_PEERS; do
-    [ -n "$peer" ] || continue
-    iptables_delete filter FORWARD -i "$AP_INTERFACE" -o "$peer" -j ACCEPT
-    iptables_delete filter FORWARD -i "$peer" -o "$AP_INTERFACE" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    [ -n "\$peer" ] || continue
+    iptables_delete filter FORWARD -i "$AP_INTERFACE" -o "\$peer" -j ACCEPT
+    iptables_delete filter FORWARD -i "\$peer" -o "$AP_INTERFACE" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
   done
 
   if [ "$AP_ROUTING_MODE" = "nat" ] && [ -n "$AP_ROUTING_NAT_EGRESS" ]; then
@@ -956,7 +956,7 @@ configure_routing_down() {
   if [ -f /run/meshctl-ip-forward ] && [ -w /proc/sys/net/ipv4/ip_forward ]; then
     local prev
     prev=$(cat /run/meshctl-ip-forward 2>/dev/null || echo 0)
-    sysctl -w net.ipv4.ip_forward="$prev" >/dev/null 2>&1 || true
+    sysctl -w net.ipv4.ip_forward="\$prev" >/dev/null 2>&1 || true
     rm -f /run/meshctl-ip-forward
   fi
 }
