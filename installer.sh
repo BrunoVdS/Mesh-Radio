@@ -426,14 +426,6 @@ gather_configuration() {
   : "${AP_DHCP_RANGE_START:=10.0.0.100}"
   : "${AP_DHCP_RANGE_END:=10.0.0.200}"
   : "${AP_DHCP_LEASE:=12h}"
-  : "${BAT_WIRED_INTERFACES:=}"
-  : "${ENABLE_AP_BRIDGE:=no}"
-  : "${BRIDGE_NAME:=br-mesh}"
-  : "${BRIDGE_IP_CIDR:=}"
-  : "${BRIDGE_STP:=on}"
-  : "${AP_ROUTING_MODE:=disabled}"
-  : "${AP_ROUTING_PEERS:=bat0}"
-  : "${AP_ROUTING_NAT_EGRESS:=}"
 
   if [ $interactive -eq 1 ]; then
     info "Gathering mesh configuration."
@@ -456,14 +448,6 @@ gather_configuration() {
     ask "Access point DHCP range start" "$AP_DHCP_RANGE_START" AP_DHCP_RANGE_START
     ask "Access point DHCP range end" "$AP_DHCP_RANGE_END" AP_DHCP_RANGE_END
     ask "Access point DHCP lease" "$AP_DHCP_LEASE" AP_DHCP_LEASE
-    ask "Wired interfaces to join batman (space-separated)" "$BAT_WIRED_INTERFACES" BAT_WIRED_INTERFACES
-    ask "Bridge AP onto mesh? (yes/no)" "$ENABLE_AP_BRIDGE" ENABLE_AP_BRIDGE
-    ask "Bridge name" "$BRIDGE_NAME" BRIDGE_NAME
-    ask "Bridge IP/CIDR (leave empty to reuse mesh IP)" "$BRIDGE_IP_CIDR" BRIDGE_IP_CIDR
-    ask "Bridge STP (on/off)" "$BRIDGE_STP" BRIDGE_STP
-    ask "AP routing mode (disabled/route/nat)" "$AP_ROUTING_MODE" AP_ROUTING_MODE
-    ask "AP routing peers (space-separated)" "$AP_ROUTING_PEERS" AP_ROUTING_PEERS
-    ask "AP NAT egress interface" "$AP_ROUTING_NAT_EGRESS" AP_ROUTING_NAT_EGRESS
   else
     info "Running in unattended mode; using configuration defaults for mesh."
   fi
@@ -484,53 +468,7 @@ gather_configuration() {
     die "Access point IP/CIDR '$AP_IP_CIDR' is invalid. Rerun the installer with a valid value."
   fi
 
-  local bridge_enabled="${ENABLE_AP_BRIDGE,,}" routing_mode="${AP_ROUTING_MODE,,}" stp_mode="${BRIDGE_STP,,}" effective_ap_cidr="$AP_IP_CIDR"
-
-  case "$bridge_enabled" in
-    yes|no) ;;
-    *) die "Bridge toggle must be 'yes' or 'no'.";;
-  esac
-
-  if [ -z "$BRIDGE_NAME" ] && [ "$bridge_enabled" = "yes" ]; then
-    die "Bridge name cannot be empty when bridging is enabled."
-  fi
-
-  if [ -n "$BRIDGE_IP_CIDR" ] && ! validate_ipv4_cidr "$BRIDGE_IP_CIDR"; then
-    die "Bridge IP/CIDR '$BRIDGE_IP_CIDR' is invalid."
-  fi
-
-  case "$stp_mode" in
-    on|off) ;;
-    *) die "Bridge STP must be 'on' or 'off'.";;
-  esac
-
-  case "$routing_mode" in
-    disabled|route|nat) ;;
-    *) die "AP routing mode must be one of disabled, route, or nat.";;
-  esac
-
-  if [ "$bridge_enabled" = "yes" ] && [ "$routing_mode" != "disabled" ]; then
-    die "AP bridging and routing modes are mutually exclusive; disable routing when bridging is enabled."
-  fi
-
-  if [ "$routing_mode" = "nat" ] && [ -z "$AP_ROUTING_NAT_EGRESS" ]; then
-    die "AP NAT egress interface must be set when routing mode is 'nat'."
-  fi
-
-  ENABLE_AP_BRIDGE="$bridge_enabled"
-  AP_ROUTING_MODE="$routing_mode"
-  BRIDGE_STP="$stp_mode"
-
-  if [ "$bridge_enabled" = "yes" ]; then
-    if [ -n "$BRIDGE_IP_CIDR" ]; then
-      effective_ap_cidr="$BRIDGE_IP_CIDR"
-    else
-      effective_ap_cidr="$IP_CIDR"
-    fi
-  fi
-
-  AP_EFFECTIVE_CIDR="$effective_ap_cidr"
-  AP_IP_ADDRESS="${AP_EFFECTIVE_CIDR%%/*}"
+  AP_IP_ADDRESS="${AP_IP_CIDR%%/*}"
 
   if ! validate_ipv4_address "$AP_IP_ADDRESS"; then
     die "Access point IP '$AP_IP_ADDRESS' is invalid."
@@ -548,8 +486,8 @@ gather_configuration() {
     die "Access point passphrase must be between 8 and 63 characters for WPA2 compatibility."
   fi
 
-  if ! validate_dhcp_range "$AP_EFFECTIVE_CIDR" "$AP_DHCP_RANGE_START" "$AP_DHCP_RANGE_END"; then
-    die "DHCP range $AP_DHCP_RANGE_START - $AP_DHCP_RANGE_END is not valid for subnet $AP_EFFECTIVE_CIDR."
+  if ! validate_dhcp_range "$AP_IP_CIDR" "$AP_DHCP_RANGE_START" "$AP_DHCP_RANGE_END"; then
+    die "DHCP range $AP_DHCP_RANGE_START - $AP_DHCP_RANGE_END is not valid for subnet $AP_IP_CIDR."
   fi
 
   if ip_in_range "$AP_IP_ADDRESS" "$AP_DHCP_RANGE_START" "$AP_DHCP_RANGE_END"; then
@@ -615,13 +553,7 @@ configure_access_point() {
   local hw_mode="g" hostapd_conf="/etc/hostapd/hostapd.conf" dnsmasq_conf="/etc/dnsmasq.d/mesh-ap.conf"
   local default_hostapd="/etc/default/hostapd" ip_setup_script="/usr/local/sbin/mesh-ap-setup"
   local ip_service="/etc/systemd/system/mesh-ap-ip.service" ap_ip="$AP_IP_ADDRESS"
-  local bridge_enabled="${ENABLE_AP_BRIDGE,,}"
-  local ip_target="$AP_INTERFACE" dnsmasq_iface="$AP_INTERFACE" ip_cidr_value="$AP_EFFECTIVE_CIDR"
-
-  if [ "$bridge_enabled" = "yes" ]; then
-    ip_target="$BRIDGE_NAME"
-    dnsmasq_iface="$BRIDGE_NAME"
-  fi
+  local ip_target="$AP_INTERFACE" dnsmasq_iface="$AP_INTERFACE" ip_cidr_value="$AP_IP_CIDR"
 
   if [ -z "$ap_ip" ]; then
     ap_ip="${ip_cidr_value%%/*}"
@@ -663,12 +595,6 @@ wpa_passphrase=$AP_PSK
 beacon_int=100
 ignore_broadcast_ssid=0
 EOF
-
-  if [ "$bridge_enabled" = "yes" ]; then
-    cat >>"$hostapd_conf" <<EOF
-bridge=$BRIDGE_NAME
-EOF
-  fi
 
   install -m 0644 -o root -g root /dev/null "$default_hostapd"
   cat >"$default_hostapd" <<EOF
@@ -721,10 +647,6 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
 
-  if [ "$bridge_enabled" = "yes" ]; then
-    info "Access point DHCP and IP configuration will target bridge ${BRIDGE_NAME}."
-  fi
-
   if "$ip_setup_script"; then
     info "Assigned ${ip_cidr_value} to ${ip_target}."
   else
@@ -769,16 +691,6 @@ COUNTRY="$COUNTRY"
 BATIF="$BATIF"
 MTU="$MTU"
 IP_CIDR="$IP_CIDR"
-AP_INTERFACE="$AP_INTERFACE"
-BAT_WIRED_INTERFACES="$BAT_WIRED_INTERFACES"
-ENABLE_AP_BRIDGE="$ENABLE_AP_BRIDGE"
-BRIDGE_NAME="$BRIDGE_NAME"
-BRIDGE_IP_CIDR="$BRIDGE_IP_CIDR"
-BRIDGE_STP="$BRIDGE_STP"
-AP_ROUTING_MODE="$AP_ROUTING_MODE"
-AP_ROUTING_PEERS="$AP_ROUTING_PEERS"
-AP_ROUTING_NAT_EGRESS="$AP_ROUTING_NAT_EGRESS"
-AP_EFFECTIVE_CIDR="$AP_EFFECTIVE_CIDR"
 
 log() {
   printf '%s\n' "$*"
@@ -792,174 +704,6 @@ mesh_supported() {
   iw list 2>/dev/null | awk '/Supported interface modes/{p=1} p{print} /Supported commands/{exit}' | grep -qi "mesh point"
 }
 
-have_iptables() {
-  command -v iptables >/dev/null 2>&1
-}
-
-iptables_add() {
-  if ! have_iptables; then
-    warn "iptables not available; skipping firewall rule addition"
-    return 0
-  fi
-  local table="\$1"; shift
-  local chain="\$1"; shift
-  local -a rule=("\$@")
-  local -a check=(iptables)
-  if [ "\$table" != "filter" ]; then
-    check+=(-t "\$table")
-  fi
-  check+=(-C "\$chain")
-  check+=("\${rule[@]}")
-  if ! "\${check[@]}" >/dev/null 2>&1; then
-    local -a add=(iptables)
-    if [ "\$table" != "filter" ]; then
-      add+=(-t "\$table")
-    fi
-    add+=(-A "\$chain")
-    add+=("\${rule[@]}")
-    if ! "\${add[@]}" >/dev/null 2>&1; then
-      warn "Failed to add iptables rule to \$chain (\${rule[*]})"
-    fi
-  fi
-}
-
-iptables_delete() {
-  have_iptables || return 0
-  local table="\$1"; shift
-  local chain="\$1"; shift
-  local -a rule=("\$@")
-  local -a check=(iptables)
-  if [ "\$table" != "filter" ]; then
-    check+=(-t "\$table")
-  fi
-  local -a delete=(iptables)
-  if [ "\$table" != "filter" ]; then
-    delete+=(-t "\$table")
-  fi
-  delete+=(-D "\$chain")
-  delete+=("\${rule[@]}")
-  while "\${check[@]}" -C "\$chain" "\${rule[@]}" >/dev/null 2>&1; do
-    if ! "\${delete[@]}" >/dev/null 2>&1; then
-      break
-    fi
-  done
-}
-
-join_wired_interfaces_up() {
-  local dev
-  for dev in $BAT_WIRED_INTERFACES; do
-    [ -n "\$dev" ] || continue
-    ip link set "\$dev" down >/dev/null 2>&1 || true
-    batctl if add "\$dev" >/dev/null 2>&1 || true
-    ip link set "\$dev" up >/dev/null 2>&1 || true
-  done
-}
-
-join_wired_interfaces_down() {
-  local dev
-  for dev in $BAT_WIRED_INTERFACES; do
-    [ -n "\$dev" ] || continue
-    batctl if del "\$dev" >/dev/null 2>&1 || true
-    ip link set "\$dev" down >/dev/null 2>&1 || true
-  done
-}
-
-configure_bridge_up() {
-  if [ "$ENABLE_AP_BRIDGE" != "yes" ]; then
-    return 0
-  fi
-
-  local br="$BRIDGE_NAME" stp_state=0 cidr="$AP_EFFECTIVE_CIDR"
-
-  ip link show "\$br" >/dev/null 2>&1 || ip link add name "\$br" type bridge
-
-  if [ "$BRIDGE_STP" = "on" ]; then
-    stp_state=1
-  fi
-
-  ip link set "\$br" type bridge stp_state "\$stp_state" >/dev/null 2>&1 || true
-  ip addr flush dev "$BATIF" >/dev/null 2>&1 || true
-  ip link set "$BATIF" up >/dev/null 2>&1 || true
-  ip link set "$BATIF" master "\$br" >/dev/null 2>&1 || true
-
-  if [ -n "$AP_INTERFACE" ]; then
-    ip link set "$AP_INTERFACE" down >/dev/null 2>&1 || true
-    ip addr flush dev "$AP_INTERFACE" >/dev/null 2>&1 || true
-    ip link set "$AP_INTERFACE" master "\$br" >/dev/null 2>&1 || true
-    ip link set "$AP_INTERFACE" up >/dev/null 2>&1 || true
-  fi
-
-  ip link set "\$br" up >/dev/null 2>&1 || true
-
-  if [ -n "\$cidr" ]; then
-    ip addr replace "\$cidr" dev "\$br" >/dev/null 2>&1 || true
-  fi
-}
-
-configure_bridge_down() {
-  if [ "$ENABLE_AP_BRIDGE" != "yes" ]; then
-    return 0
-  fi
-
-  local br="$BRIDGE_NAME"
-
-  if [ -n "$AP_INTERFACE" ]; then
-    ip link set "$AP_INTERFACE" nomaster >/dev/null 2>&1 || true
-  fi
-
-  ip link set "$BATIF" nomaster >/dev/null 2>&1 || true
-  ip addr flush dev "\$br" >/dev/null 2>&1 || true
-  ip link set "\$br" down >/dev/null 2>&1 || true
-  ip link delete "\$br" type bridge >/dev/null 2>&1 || true
-}
-
-configure_routing_up() {
-  if [ "$AP_ROUTING_MODE" = "disabled" ] || [ -z "$AP_INTERFACE" ]; then
-    return 0
-  fi
-
-  mkdir -p /run >/dev/null 2>&1 || true
-
-  if [ -w /proc/sys/net/ipv4/ip_forward ]; then
-    cat /proc/sys/net/ipv4/ip_forward > /run/meshctl-ip-forward 2>/dev/null || true
-    sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || warn "Failed to enable IPv4 forwarding"
-  fi
-
-  local peer
-  for peer in $AP_ROUTING_PEERS; do
-    [ -n "\$peer" ] || continue
-    iptables_add filter FORWARD -i "$AP_INTERFACE" -o "\$peer" -j ACCEPT
-    iptables_add filter FORWARD -i "\$peer" -o "$AP_INTERFACE" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  done
-
-  if [ "$AP_ROUTING_MODE" = "nat" ] && [ -n "$AP_ROUTING_NAT_EGRESS" ]; then
-    iptables_add nat POSTROUTING -o "$AP_ROUTING_NAT_EGRESS" -j MASQUERADE
-  fi
-}
-
-configure_routing_down() {
-  if [ "$AP_ROUTING_MODE" = "disabled" ] || [ -z "$AP_INTERFACE" ]; then
-    return 0
-  fi
-
-  local peer
-  for peer in $AP_ROUTING_PEERS; do
-    [ -n "\$peer" ] || continue
-    iptables_delete filter FORWARD -i "$AP_INTERFACE" -o "\$peer" -j ACCEPT
-    iptables_delete filter FORWARD -i "\$peer" -o "$AP_INTERFACE" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  done
-
-  if [ "$AP_ROUTING_MODE" = "nat" ] && [ -n "$AP_ROUTING_NAT_EGRESS" ]; then
-    iptables_delete nat POSTROUTING -o "$AP_ROUTING_NAT_EGRESS" -j MASQUERADE
-  fi
-
-  if [ -f /run/meshctl-ip-forward ] && [ -w /proc/sys/net/ipv4/ip_forward ]; then
-    local prev
-    prev=$(cat /run/meshctl-ip-forward 2>/dev/null || echo 0)
-    sysctl -w net.ipv4.ip_forward="\$prev" >/dev/null 2>&1 || true
-    rm -f /run/meshctl-ip-forward
-  fi
-}
 
 mesh_up() {
   modprobe batman-adv
@@ -981,29 +725,11 @@ mesh_up() {
   ip link set up dev "\$IFACE"
   ip link set up dev "\$BATIF"
   ip link set dev "\$BATIF" mtu "\$MTU" || true
-
-  join_wired_interfaces_up
-
-  if [ "\$ENABLE_AP_BRIDGE" = "yes" ]; then
-    configure_bridge_up
-  else
-    ip addr replace "\$IP_CIDR" dev "\$BATIF" >/dev/null 2>&1 || true
-  fi
-
-  configure_routing_up
+  ip addr replace "\$IP_CIDR" dev "\$BATIF" >/dev/null 2>&1 || true
 }
 
 mesh_down() {
-  configure_routing_down
-
-  if [ "\$ENABLE_AP_BRIDGE" = "yes" ]; then
-    configure_bridge_down
-  else
-    ip addr flush dev "\$BATIF" >/dev/null 2>&1 || true
-  fi
-
-  join_wired_interfaces_down
-
+  ip addr flush dev "\$BATIF" >/dev/null 2>&1 || true
   batctl if del "\$IFACE" 2>/dev/null || true
   ip link set "\$BATIF" down || true
   iw dev "\$IFACE" mesh leave 2>/dev/null || true
@@ -1012,16 +738,6 @@ mesh_down() {
 
 mesh_status() {
   echo "== Interfaces =="; ip -br link | grep -E "\$IFACE|\$BATIF" || true
-  if [ "\$ENABLE_AP_BRIDGE" = "yes" ]; then
-    echo "== Bridge ${BRIDGE_NAME} =="; ip -br addr show "\$BRIDGE_NAME" 2>/dev/null || true
-  fi
-  if [ -n "\$BAT_WIRED_INTERFACES" ]; then
-    echo "== Wired interfaces =="
-    local dev
-    for dev in \$BAT_WIRED_INTERFACES; do
-      ip -br link show "\$dev" 2>/dev/null || true
-    done
-  fi
   echo "== batctl if =="; batctl if || true
   echo "== originators =="; batctl -m "\$BATIF" o 2>/dev/null || true
   echo "== neighbors =="; batctl n 2>/dev/null || true
